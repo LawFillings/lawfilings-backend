@@ -129,7 +129,7 @@ export async function checkForDefects(params: {
   }
 }
 
-export type QaLanguage = 'en' | 'hi' | 'pa' | 'gu' | 'as' | 'bn' | 'mr';
+export type QaLanguage = 'en' | 'hi' | 'pa' | 'gu' | 'as' | 'bn' | 'mr' | 'ta';
 
 const LANGUAGE_NAMES: Record<QaLanguage, string> = {
   en: 'English',
@@ -139,6 +139,7 @@ const LANGUAGE_NAMES: Record<QaLanguage, string> = {
   as: 'Assamese',
   bn: 'Bengali',
   mr: 'Marathi',
+  ta: 'Tamil',
 };
 
 export interface ActQaSection {
