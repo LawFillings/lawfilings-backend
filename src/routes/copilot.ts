@@ -8,6 +8,7 @@ import {
   extractFirDetails,
   extractLegalNoticeSourceDetails,
   extractOaLoanRecallDetails,
+  extractAppealOrderDetails,
 } from '../services/aiCopilot.js';
 
 export const copilotRouter = Router();
@@ -128,6 +129,21 @@ copilotRouter.post('/extract-oa-loan-recall', async (req, res) => {
     res.json(extraction);
   } catch (err) {
     console.error('OA loan recall notice extraction failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
+
+/** POST /api/copilot/extract-appeal-order  { text } — text from the order/judgment being
+ *  appealed against. */
+copilotRouter.post('/extract-appeal-order', async (req, res) => {
+  const text = validateExtractionText(req, res);
+  if (text === null) return;
+
+  try {
+    const extraction = await extractAppealOrderDetails({ text });
+    res.json(extraction);
+  } catch (err) {
+    console.error('Appeal order extraction failed', err);
     res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
   }
 });

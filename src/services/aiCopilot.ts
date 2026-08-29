@@ -493,3 +493,49 @@ export async function extractOaLoanRecallDetails(params: { text: string }): Prom
       'field you cannot confidently find, return an empty string rather than guessing.',
   });
 }
+
+export interface AppealOrderExtraction {
+  orderDate: string;
+  appellantName: string;
+  respondentName: string;
+  appellantAge: string;
+  appellantAddress: string;
+}
+
+const EMPTY_APPEAL_ORDER_EXTRACTION: AppealOrderExtraction = {
+  orderDate: '',
+  appellantName: '',
+  respondentName: '',
+  appellantAge: '',
+  appellantAddress: '',
+};
+
+/**
+ * Pulls fields for the Appeal wizard out of the order/judgment being appealed against. The order
+ * date feeds the wizard's deadline calculator directly — its single most valuable output — so
+ * it's worth getting even when nothing else can be confidently extracted. appellantName is NOT
+ * simply "whoever the user is" — it has to be whichever of the order's two named parties actually
+ * lost/was aggrieved (they're the one who'd file this appeal), determined from the order's own
+ * stated outcome. Getting that backwards would misname both parties throughout the appeal, so the
+ * model is told to leave both names empty rather than guess when the outcome isn't clear.
+ */
+export async function extractAppealOrderDetails(params: { text: string }): Promise<AppealOrderExtraction> {
+  return extractStructuredFields({
+    text: params.text,
+    emptyValue: EMPTY_APPEAL_ORDER_EXTRACTION,
+    systemPrompt:
+      'You extract fields from the text of a judgment/order that is being appealed, for use in filing that ' +
+      'appeal. Respond only with JSON matching this schema: {"orderDate": "string", "appellantName": ' +
+      '"string", "respondentName": "string", "appellantAge": "string", "appellantAddress": "string"}. ' +
+      'orderDate is the date the order/judgment was passed or pronounced, formatted YYYY-MM-DD if found or ' +
+      'an empty string if not — never any other date format, since this feeds a native date input that ' +
+      'silently rejects anything else. appellantName is whichever of the order\'s two named parties the ' +
+      'order\'s own text indicates LOST — the one whose application/petition/suit was dismissed, rejected, ' +
+      'or ruled against, since that is who would file this appeal; respondentName is the opposing (winning) ' +
+      'party. If the order\'s outcome is mixed, unclear, or you cannot confidently tell which party lost, ' +
+      'leave BOTH appellantName and respondentName empty rather than guessing which of the two is which — ' +
+      'swapping them would misname both parties throughout the appeal, a serious error, not a minor one. ' +
+      'appellantAge/appellantAddress should be filled in only if the order text happens to state them for ' +
+      'the losing party (uncommon for a court order to include) — leave empty otherwise. Never guess.',
+  });
+}
