@@ -298,20 +298,54 @@ const EMPTY_FIR_EXTRACTION: FirExtraction = {
 };
 
 /**
- * Pulls the fields the Bail Application wizard's "Case & FIR details" step asks for out of an
- * FIR's text (already extracted client-side from a text-layer PDF — this never sees the file
- * itself). The bail applicant is always the person the FIR names as the accused/suspect, never
- * the complainant/informant — getting that swapped would put the wrong person's details into the
- * application, so the prompt is explicit about it. Any field not confidently findable comes back
- * empty rather than guessed, matching the same discipline as answerActQuestion.
+ * Shared plumbing behind every "read a document, fill in these wizard fields" extractor below:
+ * call Claude with a schema-demanding system prompt, parse its JSON reply (stripping a markdown
+ * fence if present), and fall back to `emptyValue` — with every field defaulted to '' — on any
+ * failure, the same "an empty field beats a wrong one" discipline as answerActQuestion.
  */
-export async function extractFirDetails(params: { text: string }): Promise<FirExtraction> {
-  const { text } = params;
+async function extractStructuredFields<T extends object>(params: {
+  text: string;
+  systemPrompt: string;
+  emptyValue: T;
+}): Promise<T> {
+  const { text, systemPrompt, emptyValue } = params;
 
   const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 1024,
-    system:
+    system: systemPrompt,
+    messages: [{ role: 'user', content: text }],
+  });
+
+  const textBlock = response.content.find((b) => b.type === 'text');
+  if (!textBlock || textBlock.type !== 'text') return emptyValue;
+
+  try {
+    const parsed = JSON.parse(stripJsonFence(textBlock.text)) as Record<string, string>;
+    const defaults = emptyValue as Record<string, string>;
+    const result: Record<string, string> = { ...defaults };
+    for (const key of Object.keys(defaults)) {
+      result[key] = parsed[key] ?? defaults[key];
+    }
+    return result as T;
+  } catch {
+    console.error('Failed to parse structured-extraction response:', textBlock.text);
+    return emptyValue;
+  }
+}
+
+/**
+ * Pulls the fields the Bail Application wizard's "Case & FIR details" step asks for out of an
+ * FIR's text (already extracted client-side from a text-layer PDF — this never sees the file
+ * itself). The bail applicant is always the person the FIR names as the accused/suspect, never
+ * the complainant/informant — getting that swapped would put the wrong person's details into the
+ * application, so the prompt is explicit about it.
+ */
+export async function extractFirDetails(params: { text: string }): Promise<FirExtraction> {
+  return extractStructuredFields({
+    text: params.text,
+    emptyValue: EMPTY_FIR_EXTRACTION,
+    systemPrompt:
       'You extract specific fields from the text of an FIR (First Information Report, an Indian police ' +
       'complaint document) for use in a bail application. Respond only with JSON matching this schema: ' +
       '{"applicantName": "string", "applicantAge": "string", "applicantAddress": "string", "firNumber": ' +
@@ -324,25 +358,138 @@ export async function extractFirDetails(params: { text: string }): Promise<FirEx
       'be a brief plain-language summary of what the FIR alleges, drawn only from the text given. For any ' +
       'field you cannot confidently find in the text, return an empty string for it rather than guessing or ' +
       'inferring — an empty field the user fills in themselves is far better than a wrong one they miss.',
-    messages: [{ role: 'user', content: text }],
   });
+}
 
-  const textBlock = response.content.find((b) => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') return EMPTY_FIR_EXTRACTION;
+export interface LegalNoticeSourceExtraction {
+  recipientName: string;
+  recipientAddress: string;
+  subject: string;
+  factsNarrative: string;
+  demandAction: string;
+}
 
-  try {
-    const parsed = JSON.parse(stripJsonFence(textBlock.text)) as Partial<FirExtraction>;
-    return {
-      applicantName: parsed.applicantName ?? '',
-      applicantAge: parsed.applicantAge ?? '',
-      applicantAddress: parsed.applicantAddress ?? '',
-      firNumber: parsed.firNumber ?? '',
-      policeStation: parsed.policeStation ?? '',
-      bnsSections: parsed.bnsSections ?? '',
-      firFacts: parsed.firFacts ?? '',
-    };
-  } catch {
-    console.error('Failed to parse FIR extraction response:', textBlock.text);
-    return EMPTY_FIR_EXTRACTION;
-  }
+const EMPTY_LEGAL_NOTICE_EXTRACTION: LegalNoticeSourceExtraction = {
+  recipientName: '',
+  recipientAddress: '',
+  subject: '',
+  factsNarrative: '',
+  demandAction: '',
+};
+
+/**
+ * Pulls fields for the Legal Notice wizard's "Parties" and "Facts and demand" steps out of a
+ * source document, which the user may upload as either (a) the underlying agreement/contract the
+ * dispute concerns, or (b) a notice/letter the recipient already sent them. The prompt has to
+ * handle both without being told which: for (b), the "recipient" of the notice being drafted is
+ * unambiguous — it's whoever sent the received letter. For (a), a plain two-party agreement gives
+ * no way to tell which party is "us" and which is the recipient this notice should go to, so the
+ * model is told to leave recipientName/recipientAddress blank rather than guess in that case —
+ * sending a legal notice to the wrong party is a serious error, not a minor inconvenience.
+ */
+export async function extractLegalNoticeSourceDetails(params: { text: string }): Promise<LegalNoticeSourceExtraction> {
+  return extractStructuredFields({
+    text: params.text,
+    emptyValue: EMPTY_LEGAL_NOTICE_EXTRACTION,
+    systemPrompt:
+      'You extract fields from a document to help draft an outgoing legal notice. The document given may ' +
+      'be EITHER (a) a notice/letter someone already sent the user, which this new notice responds to or ' +
+      'follows up on, OR (b) the underlying agreement/contract/invoice the dispute concerns — you are not ' +
+      'told which. Respond only with JSON matching this schema: {"recipientName": "string", ' +
+      '"recipientAddress": "string", "subject": "string", "factsNarrative": "string", "demandAction": ' +
+      '"string"}. recipientName/recipientAddress are whoever the NEW notice should be sent to: if the ' +
+      'document is itself a notice/letter (case a), that is unambiguously whoever sent it. If the document ' +
+      'is a two-party agreement (case b) with no indication of which party is the user and which is the ' +
+      'other side, leave recipientName/recipientAddress EMPTY rather than guessing — sending a legal ' +
+      'notice to the wrong party is a serious error, not a minor one. subject is a short line describing ' +
+      'the matter (e.g. "Recovery of outstanding dues under Rent Agreement dated ..."). factsNarrative is a ' +
+      'brief factual summary of the relationship/dispute drawn only from the text given. demandAction is ' +
+      'what the document itself demands or requires — fill this in only if the source document is itself a ' +
+      'notice making a demand; for a plain agreement, leave it empty (a fresh notice’s own demand is the ' +
+      'user’s decision, not something to infer from a contract). Leave any field empty rather than guess.',
+  });
+}
+
+export interface OaLoanRecallExtraction {
+  loanAgreementPlace: string;
+  loanAgreementNo1: string;
+  loanAgreementDate1: string;
+  defaultDate1: string;
+  loanRecallNoticePlace: string;
+  loanRecallNoticeDate: string;
+  principalAmount: string;
+  interestRate: string;
+  interestAmount: string;
+  totalAmount: string;
+  calculationDate: string;
+  loanAmount: string;
+  sanctionDate: string;
+  securityDescription: string;
+  npaDate: string;
+  propertyDetails: string;
+  factsNarrative: string;
+  defendantName: string;
+  defendantAddress: string;
+  /** 'individual' or 'institution' — always one of those two, defaulting to 'individual' if
+   *  genuinely unclear, since that's the wizard's own field default. */
+  defendantType: string;
+}
+
+const EMPTY_OA_LOAN_RECALL_EXTRACTION: OaLoanRecallExtraction = {
+  loanAgreementPlace: '',
+  loanAgreementNo1: '',
+  loanAgreementDate1: '',
+  defaultDate1: '',
+  loanRecallNoticePlace: '',
+  loanRecallNoticeDate: '',
+  principalAmount: '',
+  interestRate: '',
+  interestAmount: '',
+  totalAmount: '',
+  calculationDate: '',
+  loanAmount: '',
+  sanctionDate: '',
+  securityDescription: '',
+  npaDate: '',
+  propertyDetails: '',
+  factsNarrative: '',
+  defendantName: '',
+  defendantAddress: '',
+  defendantType: 'individual',
+};
+
+/**
+ * Pulls fields for the DRT OA wizard out of a loan recall/demand notice — typically the richest
+ * single document available for this: it usually states the loan agreement number/date, the
+ * default date, the outstanding principal/interest, the NPA date, and is addressed to the
+ * defaulting borrower (who becomes the OA's defendant). Every *Date field must come back as
+ * YYYY-MM-DD (or empty) — the wizard's date inputs are native <input type="date"> fields that
+ * silently reject any other format.
+ */
+export async function extractOaLoanRecallDetails(params: { text: string }): Promise<OaLoanRecallExtraction> {
+  return extractStructuredFields({
+    text: params.text,
+    emptyValue: EMPTY_OA_LOAN_RECALL_EXTRACTION,
+    systemPrompt:
+      'You extract fields from the text of a loan recall/demand notice (sent by a bank/NBFC to a ' +
+      'defaulting borrower) for use in a DRT Original Application. Respond only with JSON matching this ' +
+      'schema: {"loanAgreementPlace": "string", "loanAgreementNo1": "string", "loanAgreementDate1": ' +
+      '"string", "defaultDate1": "string", "loanRecallNoticePlace": "string", "loanRecallNoticeDate": ' +
+      '"string", "principalAmount": "string", "interestRate": "string", "interestAmount": "string", ' +
+      '"totalAmount": "string", "calculationDate": "string", "loanAmount": "string", "sanctionDate": ' +
+      '"string", "securityDescription": "string", "npaDate": "string", "propertyDetails": "string", ' +
+      '"factsNarrative": "string", "defendantName": "string", "defendantAddress": "string", ' +
+      '"defendantType": "individual | institution"}. defendantName/defendantAddress are the borrower this ' +
+      'notice is ADDRESSED TO (the recipient) — never the bank/lender issuing it. defendantType must be ' +
+      'exactly "institution" if the defendant\'s name indicates a company/firm/LLP/trust (e.g. contains ' +
+      '"Pvt. Ltd.", "LLP", "& Co.", "M/s", "Ltd.", or is otherwise clearly a business entity rather than a ' +
+      'named person) and "individual" otherwise — this changes how the OA refers to the opposite party ' +
+      'throughout, so get it right rather than defaulting blindly. Every field ending in "Date" (loanAgreementDate1, defaultDate1, ' +
+      'loanRecallNoticeDate, calculationDate, sanctionDate, npaDate) MUST be formatted as YYYY-MM-DD if ' +
+      'found, or an empty string if not — never any other date format, since these feed native date ' +
+      'inputs that silently reject anything else. principalAmount/interestAmount/totalAmount/loanAmount ' +
+      'should include the currency figure as written (e.g. "₹12,50,000"). factsNarrative is a brief ' +
+      'factual summary of the loan and how the default arose, drawn only from the text given. For any ' +
+      'field you cannot confidently find, return an empty string rather than guessing.',
+  });
 }

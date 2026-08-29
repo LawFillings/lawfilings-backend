@@ -2,16 +2,23 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
 import { copilotLimiter } from '../middleware/rateLimit.js';
-import { suggestClauses, checkForDefects, extractFirDetails } from '../services/aiCopilot.js';
+import {
+  suggestClauses,
+  checkForDefects,
+  extractFirDetails,
+  extractLegalNoticeSourceDetails,
+  extractOaLoanRecallDetails,
+} from '../services/aiCopilot.js';
 
 export const copilotRouter = Router();
 
 copilotRouter.use(requireAuth);
 copilotRouter.use(copilotLimiter);
 
-// Mirrors the section-text cap in routes/lawLibrary.ts — an FIR is a couple of pages at most, so
-// this is generous headroom while still bounding the cost of a single call.
-const MAX_FIR_TEXT_LENGTH = 20000;
+// Mirrors the section-text cap in routes/lawLibrary.ts — the source documents these endpoints
+// read (an FIR, a notice, a loan recall letter) are a handful of pages at most, so this is
+// generous headroom while still bounding the cost of a single call.
+const MAX_EXTRACT_TEXT_LENGTH = 20000;
 
 /** POST /api/copilot/suggest-clauses  { caseTypeId, factsEntered } */
 copilotRouter.post('/suggest-clauses', async (req, res) => {
@@ -65,22 +72,62 @@ copilotRouter.post('/check-defects', async (req, res) => {
   }
 });
 
+/** Every /extract-* route below shares this shape: validate `text` (never a file — extraction
+ *  happens client-side), call the matching service function, degrade to 502 on failure. */
+function validateExtractionText(req: import('express').Request, res: import('express').Response): string | null {
+  const { text } = req.body;
+  if (typeof text !== 'string' || !text.trim()) {
+    res.status(400).json({ error: 'text is required' });
+    return null;
+  }
+  if (text.length > MAX_EXTRACT_TEXT_LENGTH) {
+    res.status(400).json({ error: `text is too long (max ${MAX_EXTRACT_TEXT_LENGTH} characters)` });
+    return null;
+  }
+  return text;
+}
+
 /** POST /api/copilot/extract-fir  { text } — text already extracted client-side from a
  *  text-layer FIR PDF; this endpoint never receives or stores the file itself. */
 copilotRouter.post('/extract-fir', async (req, res) => {
-  const { text } = req.body;
-  if (typeof text !== 'string' || !text.trim()) {
-    return res.status(400).json({ error: 'text is required' });
-  }
-  if (text.length > MAX_FIR_TEXT_LENGTH) {
-    return res.status(400).json({ error: `text is too long (max ${MAX_FIR_TEXT_LENGTH} characters)` });
-  }
+  const text = validateExtractionText(req, res);
+  if (text === null) return;
 
   try {
     const extraction = await extractFirDetails({ text });
     res.json(extraction);
   } catch (err) {
     console.error('FIR extraction failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
+
+/** POST /api/copilot/extract-legal-notice-source  { text } — text from either a source
+ *  agreement/contract or a notice already received; see extractLegalNoticeSourceDetails for how
+ *  the two are told apart. */
+copilotRouter.post('/extract-legal-notice-source', async (req, res) => {
+  const text = validateExtractionText(req, res);
+  if (text === null) return;
+
+  try {
+    const extraction = await extractLegalNoticeSourceDetails({ text });
+    res.json(extraction);
+  } catch (err) {
+    console.error('Legal notice source extraction failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
+
+/** POST /api/copilot/extract-oa-loan-recall  { text } — text from a loan recall/demand notice. */
+copilotRouter.post('/extract-oa-loan-recall', async (req, res) => {
+  const text = validateExtractionText(req, res);
+  if (text === null) return;
+
+  try {
+    const extraction = await extractOaLoanRecallDetails({ text });
+    res.json(extraction);
+  } catch (err) {
+    console.error('OA loan recall notice extraction failed', err);
     res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
   }
 });
