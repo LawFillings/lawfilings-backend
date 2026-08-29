@@ -15,7 +15,7 @@ const MAX_QUESTION_LENGTH = 2000;
 const MAX_HISTORY_TURNS = 6;
 const MAX_ANSWER_LENGTH_IN_HISTORY = 4000;
 const MAX_SECTION_TEXT_LENGTH = 20000;
-const VALID_LANGUAGES: QaLanguage[] = ['en', 'hi', 'pa', 'gu', 'as', 'bn', 'mr', 'ta', 'te', 'kn', 'ml'];
+const VALID_LANGUAGES: QaLanguage[] = ['en', 'hi', 'pa', 'gu', 'as', 'bn', 'mr', 'ta', 'te', 'kn', 'ml', 'or', 'ur'];
 
 function parseLanguage(raw: unknown): QaLanguage {
   return VALID_LANGUAGES.includes(raw as QaLanguage) ? (raw as QaLanguage) : 'en';
