@@ -2,12 +2,16 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
 import { copilotLimiter } from '../middleware/rateLimit.js';
-import { suggestClauses, checkForDefects } from '../services/aiCopilot.js';
+import { suggestClauses, checkForDefects, extractFirDetails } from '../services/aiCopilot.js';
 
 export const copilotRouter = Router();
 
 copilotRouter.use(requireAuth);
 copilotRouter.use(copilotLimiter);
+
+// Mirrors the section-text cap in routes/lawLibrary.ts — an FIR is a couple of pages at most, so
+// this is generous headroom while still bounding the cost of a single call.
+const MAX_FIR_TEXT_LENGTH = 20000;
 
 /** POST /api/copilot/suggest-clauses  { caseTypeId, factsEntered } */
 copilotRouter.post('/suggest-clauses', async (req, res) => {
@@ -58,5 +62,25 @@ copilotRouter.post('/check-defects', async (req, res) => {
   } catch (err) {
     console.error('Defect check failed', err);
     res.status(502).json({ error: 'This feature is unavailable right now — it degrades gracefully; drafting can continue without it' });
+  }
+});
+
+/** POST /api/copilot/extract-fir  { text } — text already extracted client-side from a
+ *  text-layer FIR PDF; this endpoint never receives or stores the file itself. */
+copilotRouter.post('/extract-fir', async (req, res) => {
+  const { text } = req.body;
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required' });
+  }
+  if (text.length > MAX_FIR_TEXT_LENGTH) {
+    return res.status(400).json({ error: `text is too long (max ${MAX_FIR_TEXT_LENGTH} characters)` });
+  }
+
+  try {
+    const extraction = await extractFirDetails({ text });
+    res.json(extraction);
+  } catch (err) {
+    console.error('FIR extraction failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
   }
 });

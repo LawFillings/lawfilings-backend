@@ -276,3 +276,73 @@ export async function answerGeneralLegalQuestion(params: {
   const textBlock = response.content.find((b) => b.type === 'text');
   return { answer: textBlock?.type === 'text' ? textBlock.text : 'Something went wrong generating an answer.' };
 }
+
+export interface FirExtraction {
+  applicantName: string;
+  applicantAge: string;
+  applicantAddress: string;
+  firNumber: string;
+  policeStation: string;
+  bnsSections: string;
+  firFacts: string;
+}
+
+const EMPTY_FIR_EXTRACTION: FirExtraction = {
+  applicantName: '',
+  applicantAge: '',
+  applicantAddress: '',
+  firNumber: '',
+  policeStation: '',
+  bnsSections: '',
+  firFacts: '',
+};
+
+/**
+ * Pulls the fields the Bail Application wizard's "Case & FIR details" step asks for out of an
+ * FIR's text (already extracted client-side from a text-layer PDF — this never sees the file
+ * itself). The bail applicant is always the person the FIR names as the accused/suspect, never
+ * the complainant/informant — getting that swapped would put the wrong person's details into the
+ * application, so the prompt is explicit about it. Any field not confidently findable comes back
+ * empty rather than guessed, matching the same discipline as answerActQuestion.
+ */
+export async function extractFirDetails(params: { text: string }): Promise<FirExtraction> {
+  const { text } = params;
+
+  const response = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 1024,
+    system:
+      'You extract specific fields from the text of an FIR (First Information Report, an Indian police ' +
+      'complaint document) for use in a bail application. Respond only with JSON matching this schema: ' +
+      '{"applicantName": "string", "applicantAge": "string", "applicantAddress": "string", "firNumber": ' +
+      '"string", "policeStation": "string", "bnsSections": "string", "firFacts": "string"}. ' +
+      'applicantName/applicantAge/applicantAddress must be the person the FIR names as the ACCUSED or ' +
+      'SUSPECT — never the complainant/informant who filed the FIR; a bail application is always filed by ' +
+      'or for the accused, so naming the complainant here would be a serious, embarrassing error. If the FIR ' +
+      'names more than one accused, use the first one named. bnsSections should list the Bharatiya Nyaya ' +
+      'Sanhita (or other) offence sections cited, exactly as written (e.g. "318(4), 336(3)"). firFacts should ' +
+      'be a brief plain-language summary of what the FIR alleges, drawn only from the text given. For any ' +
+      'field you cannot confidently find in the text, return an empty string for it rather than guessing or ' +
+      'inferring — an empty field the user fills in themselves is far better than a wrong one they miss.',
+    messages: [{ role: 'user', content: text }],
+  });
+
+  const textBlock = response.content.find((b) => b.type === 'text');
+  if (!textBlock || textBlock.type !== 'text') return EMPTY_FIR_EXTRACTION;
+
+  try {
+    const parsed = JSON.parse(stripJsonFence(textBlock.text)) as Partial<FirExtraction>;
+    return {
+      applicantName: parsed.applicantName ?? '',
+      applicantAge: parsed.applicantAge ?? '',
+      applicantAddress: parsed.applicantAddress ?? '',
+      firNumber: parsed.firNumber ?? '',
+      policeStation: parsed.policeStation ?? '',
+      bnsSections: parsed.bnsSections ?? '',
+      firFacts: parsed.firFacts ?? '',
+    };
+  } catch {
+    console.error('Failed to parse FIR extraction response:', textBlock.text);
+    return EMPTY_FIR_EXTRACTION;
+  }
+}
