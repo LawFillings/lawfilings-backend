@@ -494,6 +494,150 @@ export async function extractOaLoanRecallDetails(params: { text: string }): Prom
   });
 }
 
+export interface TribunalOrderExtraction {
+  orderDate: string;
+  applicantName: string;
+  respondentName: string;
+  caseNumber: string;
+}
+
+const EMPTY_TRIBUNAL_ORDER_EXTRACTION: TribunalOrderExtraction = {
+  orderDate: '',
+  applicantName: '',
+  respondentName: '',
+  caseNumber: '',
+};
+
+/**
+ * Pulls fields for a Review/Restoration/Section 12A application out of the existing
+ * order/judgment the application concerns. Unlike an Appeal (extractAppealOrderDetails), these
+ * don't reverse party roles — a review, restoration, or withdrawal is normally sought by
+ * continuing in the same role the party already held in the original case, so applicantName/
+ * respondentName are simply the order's own two named parties in their original order, not a
+ * "who lost" determination. The order date feeds the wizard's deadline calculator where one
+ * exists (Review Application); Restoration/Section 12A have no deadline step, so it's still
+ * extracted for completeness but may go unused.
+ */
+export async function extractTribunalOrderDetails(params: { text: string }): Promise<TribunalOrderExtraction> {
+  return extractStructuredFields({
+    text: params.text,
+    emptyValue: EMPTY_TRIBUNAL_ORDER_EXTRACTION,
+    systemPrompt:
+      'You extract fields from the text of a Tribunal/Commission order or judgment, for use in a follow-on ' +
+      'application (a review, a restoration, or a withdrawal application) concerning that same order. ' +
+      'Respond only with JSON matching this schema: {"orderDate": "string", "applicantName": "string", ' +
+      '"respondentName": "string", "caseNumber": "string"}. orderDate is the date the order/judgment was ' +
+      'passed or pronounced, formatted YYYY-MM-DD if found or an empty string if not — never any other date ' +
+      'format, since this may feed a native date input that silently rejects anything else. applicantName ' +
+      'and respondentName are simply the two parties named in the order\'s own cause title, in the same ' +
+      'order/roles the order itself uses (the first-named party as applicant, the second as respondent) — ' +
+      'do NOT try to determine who "won" or "lost"; unlike an appeal, this application is normally filed by ' +
+      'a party continuing in their existing role, not someone switching sides. caseNumber is the order\'s ' +
+      'own case number exactly as written (e.g. "OA No. 245/2025", "CP(IB) No. 123/2025"). For any field ' +
+      'you cannot confidently find, return an empty string rather than guessing.',
+  });
+}
+
+export interface OaExtraction {
+  bankName: string;
+  oaNumber: string;
+  defendantName: string;
+  defendantAge: string;
+  defendantAddress: string;
+  allegations: string[];
+}
+
+const EMPTY_OA_EXTRACTION: OaExtraction = {
+  bankName: '',
+  oaNumber: '',
+  defendantName: '',
+  defendantAge: '',
+  defendantAddress: '',
+  allegations: [],
+};
+
+/**
+ * Pulls fields for a DRT Written Statement out of the Original Application (OA) it's replying
+ * to. Unlike the other extractors, this one also returns `allegations` — the OA's own key
+ * factual averments, as plain sentences without numbering or a "That" prefix (the wizard adds
+ * both) — meant to replace the wizard's default 4-item mock allegation list with the real ones
+ * from this specific OA, so the para-wise reply actually responds to what was pleaded rather
+ * than a generic stand-in. defendantName/defendantAge/defendantAddress are the party the OA is
+ * filed AGAINST (who will file this Written Statement) — never the bank/FI applicant.
+ */
+export async function extractOaDetails(params: { text: string }): Promise<OaExtraction> {
+  const response = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 1536,
+    system:
+      'You extract fields from the text of a DRT Original Application (OA), filed by a bank/financial ' +
+      'institution against a borrower/guarantor, for use in drafting that defendant\'s Written Statement ' +
+      'reply. Respond only with JSON matching this schema: {"bankName": "string", "oaNumber": "string", ' +
+      '"defendantName": "string", "defendantAge": "string", "defendantAddress": "string", "allegations": ' +
+      '["string", ...]}. bankName is the applicant bank/FI. oaNumber is the OA\'s own case number exactly ' +
+      'as written. defendantName/defendantAge/defendantAddress are the party the OA is filed AGAINST (the ' +
+      'borrower/guarantor being sued) — never the bank. allegations should be 3-8 of the OA\'s own key ' +
+      'factual averments (e.g. loan sanction, default, notice, amount claimed), each as a plain declarative ' +
+      'sentence in second person addressed to the defendant (e.g. "A loan of Rs. 10,00,000 was sanctioned ' +
+      'to you on 12.03.2023.", "You defaulted on repayment starting 01.09.2024.") — do NOT include a ' +
+      'leading number or the word "That"; the app adds both. Only include substantive factual claims, not ' +
+      'procedural or jurisdictional boilerplate. If you cannot confidently identify distinguishable numbered ' +
+      'allegations, return an empty array rather than inventing generic ones. For any other field you ' +
+      'cannot confidently find, return an empty string rather than guessing.',
+    messages: [{ role: 'user', content: params.text }],
+  });
+  const textBlock = response.content.find((b) => b.type === 'text');
+  if (!textBlock || textBlock.type !== 'text') return EMPTY_OA_EXTRACTION;
+  try {
+    const parsed = JSON.parse(stripJsonFence(textBlock.text)) as Record<string, unknown>;
+    return {
+      bankName: typeof parsed.bankName === 'string' ? parsed.bankName : '',
+      oaNumber: typeof parsed.oaNumber === 'string' ? parsed.oaNumber : '',
+      defendantName: typeof parsed.defendantName === 'string' ? parsed.defendantName : '',
+      defendantAge: typeof parsed.defendantAge === 'string' ? parsed.defendantAge : '',
+      defendantAddress: typeof parsed.defendantAddress === 'string' ? parsed.defendantAddress : '',
+      allegations: Array.isArray(parsed.allegations) ? parsed.allegations.filter((a): a is string => typeof a === 'string') : [],
+    };
+  } catch {
+    console.error('Failed to parse OA-extraction response:', textBlock.text);
+    return EMPTY_OA_EXTRACTION;
+  }
+}
+
+export interface ConsumerComplaintExtraction {
+  complainantName: string;
+  oppositePartyName: string;
+  complaintNumber: string;
+}
+
+const EMPTY_CONSUMER_COMPLAINT_EXTRACTION: ConsumerComplaintExtraction = {
+  complainantName: '',
+  oppositePartyName: '',
+  complaintNumber: '',
+};
+
+/**
+ * Pulls fields for a Consumer Commission "Written Version" reply out of the Consumer Complaint
+ * it's replying to. complainantName is who filed the original complaint (this filing's own cause
+ * title keeps them as "Complainant" throughout, per real Commission convention, regardless of who
+ * is filing this reply). oppositePartyName is who the complaint names as the party being
+ * complained against (the user filing this reply, typically already known to them, but extracted
+ * too so the wizard can confirm/cross-check rather than only relying on what the user types).
+ */
+export async function extractConsumerComplaintDetails(params: { text: string }): Promise<ConsumerComplaintExtraction> {
+  return extractStructuredFields({
+    text: params.text,
+    emptyValue: EMPTY_CONSUMER_COMPLAINT_EXTRACTION,
+    systemPrompt:
+      'You extract fields from the text of a Consumer Complaint filed before a Consumer Commission, for use ' +
+      'in drafting the opposite party\'s "Written Version" reply. Respond only with JSON matching this ' +
+      'schema: {"complainantName": "string", "oppositePartyName": "string", "complaintNumber": "string"}. ' +
+      'complainantName is whoever filed the complaint. oppositePartyName is whoever the complaint names as ' +
+      'the party it is against. complaintNumber is the complaint\'s own case/CP number exactly as written. ' +
+      'For any field you cannot confidently find, return an empty string rather than guessing.',
+  });
+}
+
 export interface AppealOrderExtraction {
   orderDate: string;
   appellantName: string;

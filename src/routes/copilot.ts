@@ -9,6 +9,9 @@ import {
   extractLegalNoticeSourceDetails,
   extractOaLoanRecallDetails,
   extractAppealOrderDetails,
+  extractTribunalOrderDetails,
+  extractOaDetails,
+  extractConsumerComplaintDetails,
 } from '../services/aiCopilot.js';
 
 export const copilotRouter = Router();
@@ -144,6 +147,51 @@ copilotRouter.post('/extract-appeal-order', async (req, res) => {
     res.json(extraction);
   } catch (err) {
     console.error('Appeal order extraction failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
+
+/** POST /api/copilot/extract-tribunal-order  { text } — text from the existing order a
+ *  Review/Restoration/Section 12A application concerns. */
+copilotRouter.post('/extract-tribunal-order', async (req, res) => {
+  const text = validateExtractionText(req, res);
+  if (text === null) return;
+
+  try {
+    const extraction = await extractTribunalOrderDetails({ text });
+    res.json(extraction);
+  } catch (err) {
+    console.error('Tribunal order extraction failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
+
+/** POST /api/copilot/extract-oa  { text } — text from the Original Application a Written
+ *  Statement is replying to. */
+copilotRouter.post('/extract-oa', async (req, res) => {
+  const text = validateExtractionText(req, res);
+  if (text === null) return;
+
+  try {
+    const extraction = await extractOaDetails({ text });
+    res.json(extraction);
+  } catch (err) {
+    console.error('OA extraction failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
+
+/** POST /api/copilot/extract-consumer-complaint  { text } — text from the Consumer Complaint a
+ *  Written Version is replying to. */
+copilotRouter.post('/extract-consumer-complaint', async (req, res) => {
+  const text = validateExtractionText(req, res);
+  if (text === null) return;
+
+  try {
+    const extraction = await extractConsumerComplaintDetails({ text });
+    res.json(extraction);
+  } catch (err) {
+    console.error('Consumer complaint extraction failed', err);
     res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
   }
 });
