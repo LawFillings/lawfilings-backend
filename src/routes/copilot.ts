@@ -12,6 +12,8 @@ import {
   extractTribunalOrderDetails,
   extractOaDetails,
   extractConsumerComplaintDetails,
+  translateDocument,
+  type QaLanguage,
 } from '../services/aiCopilot.js';
 
 export const copilotRouter = Router();
@@ -193,5 +195,39 @@ copilotRouter.post('/extract-consumer-complaint', async (req, res) => {
   } catch (err) {
     console.error('Consumer complaint extraction failed', err);
     res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
+
+const VALID_TRANSLATE_LANGUAGES: QaLanguage[] = ['en', 'hi', 'pa', 'gu', 'as', 'bn', 'mr', 'ta', 'te', 'kn', 'ml', 'or', 'ur'];
+
+// A machine translation's output runs roughly as long as its input, unlike the /extract-* routes
+// above (which read a similar amount of source text but only ever emit a handful of short
+// fields) — so this cap is set well below MAX_EXTRACT_TEXT_LENGTH to keep the translated output
+// comfortably inside a single response, even for scripts that tokenize less efficiently than
+// English.
+const MAX_TRANSLATE_TEXT_LENGTH = 12000;
+
+/** POST /api/copilot/translate-document  { text, targetLanguage } — text already extracted
+ *  client-side from an uploaded PDF (an Act, a judgment, or similar); the file itself is never
+ *  received or stored here. Longer documents are translated only up to the cap; `truncated`
+ *  tells the caller whether that happened so it can say so to the user. */
+copilotRouter.post('/translate-document', async (req, res) => {
+  const { text, targetLanguage } = req.body ?? {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required' });
+  }
+  if (!VALID_TRANSLATE_LANGUAGES.includes(targetLanguage)) {
+    return res.status(400).json({ error: 'targetLanguage must be one of the supported site languages' });
+  }
+
+  const truncated = text.length > MAX_TRANSLATE_TEXT_LENGTH;
+  const inputText = truncated ? text.slice(0, MAX_TRANSLATE_TEXT_LENGTH) : text;
+
+  try {
+    const { translatedText } = await translateDocument({ text: inputText, targetLanguage: targetLanguage as QaLanguage });
+    res.json({ translatedText, truncated });
+  } catch (err) {
+    console.error('Document translation failed', err);
+    res.status(502).json({ error: 'Translation is unavailable right now — please try again later' });
   }
 });

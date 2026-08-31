@@ -277,6 +277,33 @@ export async function answerGeneralLegalQuestion(params: {
   return { answer: textBlock?.type === 'text' ? textBlock.text : 'Something went wrong generating an answer.' };
 }
 
+/**
+ * Translates the text of an uploaded document (an Act, a judgment, an order — whatever the
+ * caller extracted client-side from a PDF) into the requested language. This is a plain machine
+ * translation, not a certified one — the frontend is responsible for showing that caveat
+ * prominently next to the output; this function's only job is to produce the best-effort
+ * translation faithfully, without summarising, adding commentary, or dropping content.
+ */
+export async function translateDocument(params: { text: string; targetLanguage: QaLanguage }): Promise<{ translatedText: string }> {
+  const { text, targetLanguage } = params;
+
+  const response = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 8192,
+    system:
+      `Translate the following legal document text into ${LANGUAGE_NAMES[targetLanguage]}. Translate faithfully ` +
+      'and completely — do not summarise, omit passages, add commentary, or explain anything. Preserve the ' +
+      'original paragraph, numbering, and section structure as closely as the target language allows. Keep ' +
+      'proper names, dates, section/case numbers, and citations as they appear in the original unless a ' +
+      'standard translated form is unambiguous and widely used. If the text is already in the target language, ' +
+      'return it unchanged. Respond with only the translated text — no preamble, no notes, no markdown fencing.',
+    messages: [{ role: 'user', content: text }],
+  });
+
+  const textBlock = response.content.find((b) => b.type === 'text');
+  return { translatedText: textBlock?.type === 'text' ? textBlock.text.trim() : '' };
+}
+
 export interface FirExtraction {
   applicantName: string;
   applicantAge: string;
