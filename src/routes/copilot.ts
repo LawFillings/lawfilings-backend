@@ -12,7 +12,7 @@ import {
   extractTribunalOrderDetails,
   extractOaDetails,
   extractConsumerComplaintDetails,
-  translateDocument,
+  streamTranslateDocument,
   type QaLanguage,
 } from '../services/aiCopilot.js';
 
@@ -223,11 +223,23 @@ copilotRouter.post('/translate-document', async (req, res) => {
   const truncated = text.length > MAX_TRANSLATE_TEXT_LENGTH;
   const inputText = truncated ? text.slice(0, MAX_TRANSLATE_TEXT_LENGTH) : text;
 
+  // Streamed as plain text so the frontend can render it incrementally instead of waiting for
+  // the whole translation to finish generating — `truncated` is already known before generation
+  // starts (it only depends on input length), so it goes in a header rather than the body.
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('X-Translation-Truncated', String(truncated));
+
   try {
-    const { translatedText } = await translateDocument({ text: inputText, targetLanguage: targetLanguage as QaLanguage });
-    res.json({ translatedText, truncated });
+    await streamTranslateDocument({ text: inputText, targetLanguage: targetLanguage as QaLanguage }, (chunk) => {
+      res.write(chunk);
+    });
+    res.end();
   } catch (err) {
     console.error('Document translation failed', err);
-    res.status(502).json({ error: 'Translation is unavailable right now — please try again later' });
+    if (res.headersSent) {
+      res.end();
+    } else {
+      res.status(502).json({ error: 'Translation is unavailable right now — please try again later' });
+    }
   }
 });

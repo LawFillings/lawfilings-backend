@@ -283,11 +283,18 @@ export async function answerGeneralLegalQuestion(params: {
  * translation, not a certified one — the frontend is responsible for showing that caveat
  * prominently next to the output; this function's only job is to produce the best-effort
  * translation faithfully, without summarising, adding commentary, or dropping content.
+ *
+ * Streams text deltas to `onChunk` as they arrive from the model, rather than returning the full
+ * translation only once generation finishes — a full document can take a while to generate, and
+ * without this the caller sees nothing at all for that whole stretch.
  */
-export async function translateDocument(params: { text: string; targetLanguage: QaLanguage }): Promise<{ translatedText: string }> {
+export async function streamTranslateDocument(
+  params: { text: string; targetLanguage: QaLanguage },
+  onChunk: (textDelta: string) => void
+): Promise<void> {
   const { text, targetLanguage } = params;
 
-  const response = await anthropic.messages.create({
+  const stream = anthropic.messages.stream({
     model: MODEL,
     max_tokens: 8192,
     system:
@@ -300,8 +307,8 @@ export async function translateDocument(params: { text: string; targetLanguage: 
     messages: [{ role: 'user', content: text }],
   });
 
-  const textBlock = response.content.find((b) => b.type === 'text');
-  return { translatedText: textBlock?.type === 'text' ? textBlock.text.trim() : '' };
+  stream.on('text', onChunk);
+  await stream.finalMessage();
 }
 
 export interface FirExtraction {

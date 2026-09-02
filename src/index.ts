@@ -12,8 +12,14 @@ import { globalLimiter } from './middleware/rateLimit.js';
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+// exposedHeaders: browsers hide all but a small default set of response headers from JS unless
+// the server explicitly allows them — X-Translation-Truncated (set by /api/copilot/translate-
+// document) needs to be readable via fetch()'s Response.headers.
+app.use(cors({ exposedHeaders: ['X-Translation-Truncated'] }));
+// Express's default 100kb body limit is too small for /api/copilot/translate-document, which can
+// receive a full Act's text client-side (the largest, the Constitution, is ~470kb) before the
+// route truncates it server-side for the actual translation call.
+app.use(express.json({ limit: '1mb' }));
 app.use(globalLimiter);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
