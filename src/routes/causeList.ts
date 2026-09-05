@@ -221,30 +221,32 @@ const AUTO_FETCH_COURTS: Record<
   }
 > = {
   'delhi-high-court': {
-    // Delhi HC's cause-list PDFs live at /files/{YYYY-MM}/cause-list/{filename}.pdf, but the
-    // filename isn't a clean function of the date alone (it varies by list type and carries a
-    // day-of-week suffix, e.g. "combined_cause_list_05.09.2026_sat.pdf") — so this scrapes the
-    // day's cause-list index page for the actual "combined cause list" link first, then fetches
-    // that PDF, rather than guessing the filename.
+    // Previously scraped the day's cause-list index page for a "combined_cause_list_..." link —
+    // but that index only shows the most recent ~10 entries on its first page (paginated), so any
+    // date more than a couple of days old was never found even though the real PDF was still live
+    // (confirmed live: 2026-09-02, 3 days old, still 200s). Also, that old filename pattern
+    // ("combined_cause_list_DD.MM.YYYY_<dow>.pdf") no longer matches anything the site actually
+    // publishes — a real naming-convention change since this was written, not just a pagination
+    // issue. The current "Cause List of Sitting of Benches" entry (the big, all-benches merged
+    // document this is meant to fetch) is now named plainly `c_DDMMYYYY.pdf` (no separators, no
+    // day-of-week suffix) — confirmed live across multiple dates — so this constructs that URL
+    // directly instead of scraping for it at all.
     fetchPdf: async (date) => {
       const [year, month, day] = date.split('-');
-      const ddmmyyyy = `${day}.${month}.${year}`;
-      const indexUrl = 'https://delhihighcourt.nic.in/web/cause-lists/cause-list';
-      const indexResponse = await fetchWithTimeout(indexUrl);
-      if (!indexResponse.ok) {
-        throw new Error(`Court site returned ${indexResponse.status}`);
+      const ddmmyyyy = `${day}${month}${year}`;
+      const pdfUrl = `https://delhihighcourt.nic.in/files/${year}-${month}/cause-list/c_${ddmmyyyy}.pdf`;
+      const response = await fetchWithTimeout(pdfUrl);
+      if (response.status === 404) {
+        throw new Error(`No cause list found for ${date} yet`);
       }
-      const html = await indexResponse.text();
-      const linkPattern = new RegExp(
-        `(/files/${year}-${month}/cause-list/combined_cause_list_${ddmmyyyy.replace(/\./g, '\\.')}[^"'\\s]*\\.pdf)`,
-        'i'
-      );
-      const match = html.match(linkPattern);
-      if (!match) {
-        throw new Error(`No combined cause list found for ${date} yet`);
+      if (!response.ok) {
+        throw new Error(`Court site returned ${response.status}`);
       }
-      const pdfUrl = new URL(match[1], indexUrl).toString();
-      return [await fetchPdfBuffer(pdfUrl)];
+      const contentType = response.headers.get('content-type') ?? '';
+      if (!contentType.includes('pdf')) {
+        throw new Error('Court site did not return a PDF (list may not be published yet for this date)');
+      }
+      return [Buffer.from(await response.arrayBuffer())];
     },
   },
 
