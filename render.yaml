@@ -22,7 +22,7 @@ databases:
 services:
   - type: web
     name: lawfilings-backend
-    runtime: node
+    env: node
     repo: https://github.com/LawFillings/lawfilings-backend
     plan: free # Free web services spin down after inactivity and cold-start on the next request —
     # upgrade to a paid plan once this is genuinely serving real advocates.
@@ -44,7 +44,7 @@ services:
 
   - type: web
     name: lawfilings-frontend
-    runtime: static
+    env: static
     repo: https://github.com/LawFillings/lawfilings-frontend
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
