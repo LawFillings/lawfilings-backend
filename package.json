@@ -22,7 +22,8 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
     "pg": "^8.22.0",
-    "razorpay": "^2.9.8"
+    "razorpay": "^2.9.8",
+    "undici": "^7.29.0"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",

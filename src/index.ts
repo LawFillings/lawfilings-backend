@@ -5,6 +5,7 @@ import { catalogRouter } from './routes/catalog.js';
 import { casesRouter } from './routes/cases.js';
 import { authRouter } from './routes/auth.js';
 import { copilotRouter } from './routes/copilot.js';
+import { causeListRouter } from './routes/causeList.js';
 import { lawLibraryRouter } from './routes/lawLibrary.js';
 import { billingRouter } from './routes/billing.js';
 import { adminRouter } from './routes/admin.js';
@@ -16,6 +17,11 @@ const app = express();
 // the server explicitly allows them — X-Translation-Truncated (set by /api/copilot/translate-
 // document) needs to be readable via fetch()'s Response.headers.
 app.use(cors({ exposedHeaders: ['X-Translation-Truncated'] }));
+// A base64-encoded scanned cause-list PDF/photo comfortably exceeds every other route's body —
+// this path-scoped parser must be registered before the general one below, since body-parser
+// skips re-parsing (and so skips its limit check) once a request's body has already been parsed
+// by an earlier express.json() in the stack.
+app.use('/api/cause-list', express.json({ limit: '15mb' }));
 // Express's default 100kb body limit is too small for /api/copilot/translate-document, which can
 // receive a full Act's text client-side (the largest, the Constitution, is ~470kb) before the
 // route truncates it server-side for the actual translation call.
@@ -28,6 +34,7 @@ app.use('/api/auth', authRouter);
 app.use('/api', catalogRouter);
 app.use('/api/cases', casesRouter);
 app.use('/api/copilot', copilotRouter);
+app.use('/api/cause-list', causeListRouter);
 app.use('/api/law-library', lawLibraryRouter);
 app.use('/api/billing', billingRouter);
 app.use('/api/admin', adminRouter);

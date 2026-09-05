@@ -717,3 +717,149 @@ export async function extractAppealOrderDetails(params: { text: string }): Promi
       'the losing party (uncommon for a court order to include) — leave empty otherwise. Never guess.',
   });
 }
+
+export interface CauseListEntry {
+  itemNo: string;
+  caseNo: string;
+  parties: string;
+  advocates: string;
+}
+
+const CAUSE_LIST_MODEL = 'claude-haiku-4-5';
+// Each model's real output ceiling (confirmed live against the API, not assumed) — a busy court's
+// list can run to dozens of matters with long multi-line case numbers/advocate lists, and a
+// response cut off mid-JSON by hitting max_tokens silently drops every remaining matter, which is
+// worse than the extra cost/latency of asking for the model's full ceiling. Anything above ~32K
+// requires a streaming response rather than `messages.create`, hence `callCauseListModel` streams.
+const CAUSE_LIST_MODEL_MAX_TOKENS = 64_000;
+
+/**
+ * Transcribes every matter listed on a court's daily cause list (one or more PDFs/photos of one)
+ * into a structured table. Unlike the extract-* functions above, this reads the source document(s)
+ * themselves via vision content blocks — cause-list uploads are frequently scans or phone photos
+ * with no text layer, so there's no client-side text-extraction step to lean on first.
+ *
+ * Accepts more than one source because some tribunals (NCLT, NCLAT) publish a separate PDF per
+ * court sitting that day rather than one combined list — the caller fetches whichever PDFs are
+ * published for the requested bench/date and this transcribes all of them into one merged table.
+ *
+ * Deliberately returns every entry it can read rather than trying to pick out only the requesting
+ * advocate's own matters — name-matching (spelling variants, associate counsel, firm names) is
+ * left to the caller instead of trusting the model to silently filter rows a person might expect
+ * to see but that were dropped by an imperfect match.
+ */
+// Haiku 4.5's 200K context window caps documents at 100 PDF pages (Anthropic's own limit — larger
+// only on 1M-context models). Most cause lists are well under that, but some courts (e.g.
+// Jharkhand HC's daily list runs 150+ pages) genuinely exceed it — silently truncating would drop
+// real matters from the list, which is worse than the extra cost, so this retries the exact same
+// request on a bigger-context model rather than ever cutting a document down.
+const CAUSE_LIST_LARGE_DOC_MODEL = 'claude-sonnet-5';
+const CAUSE_LIST_LARGE_DOC_MODEL_MAX_TOKENS = 128_000;
+
+async function callCauseListModel(
+  model: string,
+  maxTokens: number,
+  sourceBlocks: (Anthropic.DocumentBlockParam | Anthropic.ImageBlockParam)[],
+  focusInstruction?: string
+) {
+  const stream = anthropic.messages.stream({
+    model,
+    max_tokens: maxTokens,
+    system:
+      'You transcribe every matter listed across one or more cause-list documents (they may be several ' +
+      'court-wise lists for the same bench and date) into one merged structured table. Respond only with ' +
+      'JSON matching this schema: {"entries": [{"itemNo": "string", "caseNo": "string", "parties": ' +
+      '"string", "advocates": "string"}]}. Include every row you can read from every document given, in ' +
+      'the order they appear — do not filter, summarise, or omit rows because they look unimportant. ' +
+      'itemNo is the serial/item number as printed (if any). caseNo is the case/matter number as printed. ' +
+      'parties is the party names as printed (e.g. "A vs B"), kept as one string. advocates is the advocate ' +
+      'name(s) for the matter as printed, kept as one string — if a row lists advocates for both sides, ' +
+      'include both. Read only what is actually printed on the page — never invent or infer a row that is ' +
+      'not there, and never guess at illegible text; use an empty string for a field you cannot read rather ' +
+      'than guessing. If a document is not a cause list, skip it. If nothing is legible across all documents ' +
+      'given, return {"entries": []}.' +
+      (focusInstruction ? ` ${focusInstruction}` : ''),
+    messages: [
+      {
+        role: 'user',
+        content: [...sourceBlocks, { type: 'text', text: 'Transcribe every cause list given above.' }],
+      },
+    ],
+  });
+  return stream.finalMessage();
+}
+
+export interface CauseListExtractionResult {
+  entries: CauseListEntry[];
+  /** Real token counts from the actual API response — logged per-request by the route so real
+   *  per-court/per-advocate cost can be worked out from production data later, rather than
+   *  guessed at (a real day-one gap: development testing burned real credits with no per-request
+   *  breakdown of what actually drove the cost, only Anthropic's own account-wide usage graph). */
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export async function extractCauseList(params: {
+  sources: { base64: string; mediaType: 'application/pdf' | 'image/jpeg' | 'image/png' }[];
+  /** Restricts transcription to one section of a larger merged document (e.g. "only the Supreme
+   *  Court's Court No. 5 section") — appended to the system prompt as-is. Every other extraction
+   *  call already sends only the relevant document(s), so this is unused outside that one case. */
+  focusInstruction?: string;
+}): Promise<CauseListExtractionResult> {
+  const sourceBlocks: (Anthropic.DocumentBlockParam | Anthropic.ImageBlockParam)[] = params.sources.map((s) =>
+    s.mediaType === 'application/pdf'
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: s.base64 } }
+      : { type: 'image', source: { type: 'base64', media_type: s.mediaType, data: s.base64 } }
+  );
+
+  let response;
+  try {
+    response = await callCauseListModel(CAUSE_LIST_MODEL, CAUSE_LIST_MODEL_MAX_TOKENS, sourceBlocks, params.focusInstruction);
+  } catch (err) {
+    const isPageLimitError = err instanceof Anthropic.APIError && /PDF pages/i.test(err.message);
+    if (!isPageLimitError) throw err;
+    response = await callCauseListModel(
+      CAUSE_LIST_LARGE_DOC_MODEL,
+      CAUSE_LIST_LARGE_DOC_MODEL_MAX_TOKENS,
+      sourceBlocks,
+      params.focusInstruction
+    );
+  }
+
+  // A response cut off mid-JSON by hitting max_tokens is not "nothing legible" — it's a real
+  // matters getting silently dropped, and JSON.parse would fail on it anyway. Caught explicitly
+  // (rather than left to fall into the parse-failure branch below) so this specific cause is never
+  // confused with a genuinely garbled/unreadable response.
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error(
+      "This cause list has too many matters to transcribe in one response — please narrow the request (e.g. by court/judge) or try again."
+    );
+  }
+
+  const usage = {
+    model: response.model,
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+  };
+
+  const textBlock = response.content.find((b) => b.type === 'text');
+  if (!textBlock || textBlock.type !== 'text') return { entries: [], ...usage };
+
+  try {
+    const parsed = JSON.parse(stripJsonFence(textBlock.text)) as { entries?: unknown };
+    if (!Array.isArray(parsed.entries)) return { entries: [], ...usage };
+    return {
+      entries: parsed.entries.map((e) => ({
+        itemNo: typeof e?.itemNo === 'string' ? e.itemNo : '',
+        caseNo: typeof e?.caseNo === 'string' ? e.caseNo : '',
+        parties: typeof e?.parties === 'string' ? e.parties : '',
+        advocates: typeof e?.advocates === 'string' ? e.advocates : '',
+      })),
+      ...usage,
+    };
+  } catch {
+    console.error('Failed to parse cause-list extraction response:', textBlock.text);
+    return { entries: [], ...usage };
+  }
+}
