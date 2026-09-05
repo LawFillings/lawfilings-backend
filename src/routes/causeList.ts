@@ -932,22 +932,31 @@ const AUTO_FETCH_COURTS: Record<
           "The Supreme Court's merged list covers every court and runs 200+ pages — please enter a Court No. to narrow it down."
         );
       }
-      const indexResponse = await fetchWithTimeout('https://www.sci.gov.in/cause-list/');
-      if (!indexResponse.ok) {
-        throw new Error(`Court site returned ${indexResponse.status}`);
-      }
-      const html = await indexResponse.text();
-      // Matches the MAIN merged list (e.g. ".../2026-09-07/M_J_1.pdf" or "F_J_1.pdf") for the exact
-      // date — deliberately excludes "/advance/{date}/M_J.pdf", a separate, non-detailed preview
-      // list under the same date that carries no trailing "_<n>" and no per-court breakdown.
-      const linkPattern = new RegExp(
-        `https://api\\.sci\\.gov\\.in/jonew/cl/${date}/[A-Z]+_J_\\d+\\.pdf`
-      );
-      const match = html.match(linkPattern);
-      if (!match) {
+      // Previously scraped `https://www.sci.gov.in/cause-list/` for a link matching the exact
+      // date — but that index only ever displays a forward-looking window of upcoming dates (a
+      // handful of days out), never past ones, so any date more than a couple of days old always
+      // failed here even though the PDF itself was still live at its own predictable URL
+      // (confirmed live: .../2026-09-02/M_J_1.pdf still 200s three days after publication, with no
+      // link to it anywhere on the current index page). The main merged list lives at a fixed
+      // `.../jonew/cl/{date}/[M|F]_J_1.pdf` path (M for a Miscellaneous-hearing day, F for
+      // Regular), so this now probes both prefixes directly instead of depending on what the index
+      // happens to be showing today. Also fixes a second, latent bug: some days genuinely publish
+      // *both* an M and an F list (confirmed live for 2026-09-01) — the old single `html.match()`
+      // would have silently picked only whichever appeared first in the scraped page, missing the
+      // other list type's matters entirely; this fetches every prefix that actually exists.
+      const candidateUrls = ['M', 'F'].map((prefix) => `https://api.sci.gov.in/jonew/cl/${date}/${prefix}_J_1.pdf`);
+      const existing = (
+        await Promise.all(
+          candidateUrls.map(async (url) => {
+            const response = await fetchWithTimeout(url, 15_000, { method: 'HEAD' });
+            return response.ok ? url : null;
+          })
+        )
+      ).filter((url): url is string => url !== null);
+      if (existing.length === 0) {
         throw new Error(`No cause list found for ${date} yet`);
       }
-      return [await fetchPdfBuffer(match[0])];
+      return fetchPdfBuffersTolerant(existing);
     },
     buildFocusInstruction: (scope) => {
       const heading = scope.trim() === '1' ? "CHIEF JUSTICE'S COURT" : `COURT NO. : ${scope.trim()}`;
