@@ -30,3 +30,9 @@ catalogRouter.get('/case-types/:id/complexity-rules', async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM complexity_rules WHERE case_type_id = $1', [req.params.id]);
   res.json(rows);
 });
+
+/** GET /api/case-types/:id/precedents */
+catalogRouter.get('/case-types/:id/precedents', async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM precedents WHERE $1 = ANY(relevant_case_types)', [req.params.id]);
+  res.json(rows);
+});
