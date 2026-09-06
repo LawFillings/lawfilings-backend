@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, type AuthedRequest } from '../middleware/auth.js';
 import { copilotLimiter } from '../middleware/rateLimit.js';
 import {
   suggestClauses,
@@ -12,6 +12,7 @@ import {
   extractTribunalOrderDetails,
   extractOaDetails,
   extractConsumerComplaintDetails,
+  analyzeJudgeStyle,
   streamTranslateDocument,
   type QaLanguage,
 } from '../services/aiCopilot.js';
@@ -105,6 +106,41 @@ copilotRouter.post('/extract-fir', async (req, res) => {
   } catch (err) {
     console.error('FIR extraction failed', err);
     res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
+
+// Judgments run much longer than the single-document sources the other extractors above read
+// (an FIR, a notice), and this route can take more than one — generous enough for 2-3 full
+// judgments, bounded enough to keep a single call's cost/latency sane.
+const MAX_JUDGE_STYLE_TEXT_LENGTH = 60000;
+
+/** POST /api/copilot/analyze-judge-style  { texts: string[] } — one or more judgments by a
+ *  specific judge, each already extracted client-side the same way every other extractor here
+ *  reads text (never the file itself). Paid-subscription only — deliberately stricter than the
+ *  free-draft allowance in routes/cases.ts (no free-trial fallback here), since this is an
+ *  optional, on-demand paid feature rather than the core drafting flow every account gets a
+ *  couple of free tries at. */
+copilotRouter.post('/analyze-judge-style', async (req: AuthedRequest, res) => {
+  const { rows } = await pool.query('SELECT subscription_status FROM users WHERE id = $1', [req.userId]);
+  if (rows[0]?.subscription_status !== 'active') {
+    return res.status(402).json({ error: 'Judge style analysis is available on a paid plan.', reason: 'subscription_required' });
+  }
+
+  const { texts } = req.body;
+  if (!Array.isArray(texts) || texts.length === 0 || texts.some((t) => typeof t !== 'string' || !t.trim())) {
+    return res.status(400).json({ error: 'texts is required and must be a non-empty array of non-empty strings' });
+  }
+  const combined = texts.map((t: string) => t.trim()).join('\n\n---\n\n');
+  if (combined.length > MAX_JUDGE_STYLE_TEXT_LENGTH) {
+    return res.status(400).json({ error: `Combined judgment text is too long (max ${MAX_JUDGE_STYLE_TEXT_LENGTH} characters) — try fewer or shorter judgments` });
+  }
+
+  try {
+    const profile = await analyzeJudgeStyle({ text: combined });
+    res.json(profile);
+  } catch (err) {
+    console.error('Judge style analysis failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — try again shortly' });
   }
 });
 

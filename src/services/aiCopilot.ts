@@ -395,6 +395,68 @@ export async function extractFirDetails(params: { text: string }): Promise<FirEx
   });
 }
 
+export interface JudgeStyleProfile {
+  structuralPreference: 'facts_first' | 'law_first' | 'neutral';
+  citationDensity: 'high' | 'low' | 'neutral';
+  summary: string;
+}
+
+const EMPTY_JUDGE_STYLE_PROFILE: JudgeStyleProfile = {
+  structuralPreference: 'neutral',
+  citationDensity: 'neutral',
+  summary: '',
+};
+
+/**
+ * Analyzes one or more judgments by a specific judge for *writing and procedural* style only —
+ * never how the judge tends to rule. That distinction matters: adapting how a filing is
+ * structured/phrased for a bench's known drafting preferences is a legitimate, common advocacy
+ * practice; profiling how a judge tends to decide on the merits (leniency, grant/dismissal
+ * patterns) is not something this platform does, and the prompt refuses it explicitly rather than
+ * leaving it to chance. Used to reorder (never rewrite) a draft's already-templated sections — see
+ * `applyJudgeStyleToSections` on the frontend.
+ */
+const STRUCTURAL_PREFERENCES = ['facts_first', 'law_first', 'neutral'] as const;
+const CITATION_DENSITIES = ['high', 'low', 'neutral'] as const;
+
+export async function analyzeJudgeStyle(params: { text: string }): Promise<JudgeStyleProfile> {
+  const result = await extractStructuredFields({
+    text: params.text,
+    emptyValue: EMPTY_JUDGE_STYLE_PROFILE,
+    systemPrompt:
+      "You analyze the WRITING and PROCEDURAL style of a judge's own judgments, to help an " +
+      'advocate structure a filing the way that judge is accustomed to reading one — never to ' +
+      'predict how the judge might rule. Respond only with JSON matching this schema: ' +
+      '{"structuralPreference": "facts_first" | "law_first" | "neutral", "citationDensity": ' +
+      '"high" | "low" | "neutral", "summary": "string"}. structuralPreference: "facts_first" if ' +
+      "the judge's own reasoning typically restates the factual narrative before addressing the " +
+      'governing law/precedent; "law_first" if the judge typically leads with the law before ' +
+      'applying it to facts; "neutral" if there is no clear consistent pattern, or the text given ' +
+      "is too short to tell. citationDensity: \"high\" if the judge's judgments cite precedent or " +
+      'statutory provisions extensively and in detail; "low" if citations are sparse or purely ' +
+      'functional; "neutral" otherwise. summary must be 2-3 plain sentences describing only ' +
+      "observable writing/structural tendencies (tone, formality, how arguments are organised) — " +
+      'never comment on sentencing, relief granted or denied, leniency, or any other indication of ' +
+      'how this judge tends to rule on the merits; that is out of scope no matter how the text ' +
+      'might seem to suggest it. If the text does not clearly support a confident read, use ' +
+      '"neutral" for both fields and say so plainly in summary rather than guessing.',
+  });
+
+  // extractStructuredFields treats every field as a plain string — validate the two enum fields
+  // actually landed on one of the allowed values (Claude could in principle return something
+  // else) before trusting the narrower TS type; fall back to 'neutral' rather than pass through
+  // an unexpected value, same "empty/safe beats wrong" discipline as every extractor above.
+  return {
+    structuralPreference: (STRUCTURAL_PREFERENCES as readonly string[]).includes(result.structuralPreference)
+      ? result.structuralPreference
+      : 'neutral',
+    citationDensity: (CITATION_DENSITIES as readonly string[]).includes(result.citationDensity)
+      ? result.citationDensity
+      : 'neutral',
+    summary: result.summary,
+  };
+}
+
 export interface LegalNoticeSourceExtraction {
   recipientName: string;
   recipientAddress: string;
