@@ -408,38 +408,62 @@ const EMPTY_JUDGE_STYLE_PROFILE: JudgeStyleProfile = {
 };
 
 /**
- * Analyzes one or more judgments by a specific judge for *writing and procedural* style only —
- * never how the judge tends to rule. That distinction matters: adapting how a filing is
- * structured/phrased for a bench's known drafting preferences is a legitimate, common advocacy
- * practice; profiling how a judge tends to decide on the merits (leniency, grant/dismissal
- * patterns) is not something this platform does, and the prompt refuses it explicitly rather than
- * leaving it to chance. Used to reorder (never rewrite) a draft's already-templated sections — see
- * `applyJudgeStyleToSections` on the frontend.
+ * Analyzes one or more judgments by a specific judge, OR a sample application/petition supplied
+ * by the user, for *structural* style only. For judgments, that means never profiling how the
+ * judge tends to rule: adapting how a filing is structured/phrased for a bench's known drafting
+ * preferences is a legitimate, common advocacy practice; profiling how a judge tends to decide on
+ * the merits (leniency, grant/dismissal patterns) is not something this platform does, and the
+ * prompt refuses it explicitly rather than leaving it to chance. For a sample application, there
+ * is no such concern — it just describes how the user's own preferred document is organised.
+ * Both source types are analyzed into the identical JudgeStyleProfile shape, which is used to
+ * reorder (never rewrite) a draft's already-templated sections — see `applyJudgeStyleToSections`
+ * on the frontend.
  */
 const STRUCTURAL_PREFERENCES = ['facts_first', 'law_first', 'neutral'] as const;
 const CITATION_DENSITIES = ['high', 'low', 'neutral'] as const;
 
-export async function analyzeJudgeStyle(params: { text: string }): Promise<JudgeStyleProfile> {
+const JUDGE_STYLE_SYSTEM_PROMPT =
+  "You analyze the WRITING and PROCEDURAL style of a judge's own judgments, to help an " +
+  'advocate structure a filing the way that judge is accustomed to reading one — never to ' +
+  'predict how the judge might rule. Respond only with JSON matching this schema: ' +
+  '{"structuralPreference": "facts_first" | "law_first" | "neutral", "citationDensity": ' +
+  '"high" | "low" | "neutral", "summary": "string"}. structuralPreference: "facts_first" if ' +
+  "the judge's own reasoning typically restates the factual narrative before addressing the " +
+  'governing law/precedent; "law_first" if the judge typically leads with the law before ' +
+  'applying it to facts; "neutral" if there is no clear consistent pattern, or the text given ' +
+  "is too short to tell. citationDensity: \"high\" if the judge's judgments cite precedent or " +
+  'statutory provisions extensively and in detail; "low" if citations are sparse or purely ' +
+  'functional; "neutral" otherwise. summary must be 2-3 plain sentences describing only ' +
+  "observable writing/structural tendencies (tone, formality, how arguments are organised) — " +
+  'never comment on sentencing, relief granted or denied, leniency, or any other indication of ' +
+  'how this judge tends to rule on the merits; that is out of scope no matter how the text ' +
+  'might seem to suggest it. If the text does not clearly support a confident read, use ' +
+  '"neutral" for both fields and say so plainly in summary rather than guessing.';
+
+const APPLICATION_FORMAT_SYSTEM_PROMPT =
+  'You analyze the STRUCTURE of a sample legal application/petition/plaint the user has uploaded ' +
+  'as the format they want a new draft to follow — this is their own reference document, not a ' +
+  "judgment, so there is no concern about profiling anyone's decisions. Respond only with JSON " +
+  'matching this schema: {"structuralPreference": "facts_first" | "law_first" | "neutral", ' +
+  '"citationDensity": "high" | "low" | "neutral", "summary": "string"}. structuralPreference: ' +
+  '"facts_first" if the sample states the facts/cause of action before the statutory provisions ' +
+  'or legal grounds relied upon; "law_first" if it leads with the statutory provisions/grounds ' +
+  'before the facts; "neutral" if there is no clear pattern, or the text given is too short to ' +
+  'tell. citationDensity: "high" if the sample cites specific sections/provisions or case law ' +
+  'extensively; "low" if citations are sparse or absent; "neutral" otherwise. summary must be 2-3 ' +
+  'plain sentences describing only the observable structure/organisation of the sample (e.g. ' +
+  'which sections it has, and in what order) — do not comment on the merits, the outcome sought, ' +
+  'or any party\'s conduct. If the text does not clearly support a confident read, use "neutral" ' +
+  'for both fields and say so plainly in summary rather than guessing.';
+
+export async function analyzeJudgeStyle(params: {
+  text: string;
+  sourceType?: 'judgment' | 'application';
+}): Promise<JudgeStyleProfile> {
   const result = await extractStructuredFields({
     text: params.text,
     emptyValue: EMPTY_JUDGE_STYLE_PROFILE,
-    systemPrompt:
-      "You analyze the WRITING and PROCEDURAL style of a judge's own judgments, to help an " +
-      'advocate structure a filing the way that judge is accustomed to reading one — never to ' +
-      'predict how the judge might rule. Respond only with JSON matching this schema: ' +
-      '{"structuralPreference": "facts_first" | "law_first" | "neutral", "citationDensity": ' +
-      '"high" | "low" | "neutral", "summary": "string"}. structuralPreference: "facts_first" if ' +
-      "the judge's own reasoning typically restates the factual narrative before addressing the " +
-      'governing law/precedent; "law_first" if the judge typically leads with the law before ' +
-      'applying it to facts; "neutral" if there is no clear consistent pattern, or the text given ' +
-      "is too short to tell. citationDensity: \"high\" if the judge's judgments cite precedent or " +
-      'statutory provisions extensively and in detail; "low" if citations are sparse or purely ' +
-      'functional; "neutral" otherwise. summary must be 2-3 plain sentences describing only ' +
-      "observable writing/structural tendencies (tone, formality, how arguments are organised) — " +
-      'never comment on sentencing, relief granted or denied, leniency, or any other indication of ' +
-      'how this judge tends to rule on the merits; that is out of scope no matter how the text ' +
-      'might seem to suggest it. If the text does not clearly support a confident read, use ' +
-      '"neutral" for both fields and say so plainly in summary rather than guessing.',
+    systemPrompt: params.sourceType === 'application' ? APPLICATION_FORMAT_SYSTEM_PROMPT : JUDGE_STYLE_SYSTEM_PROMPT,
   });
 
   // extractStructuredFields treats every field as a plain string — validate the two enum fields

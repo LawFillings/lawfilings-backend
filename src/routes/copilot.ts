@@ -114,29 +114,39 @@ copilotRouter.post('/extract-fir', async (req, res) => {
 // judgments, bounded enough to keep a single call's cost/latency sane.
 const MAX_JUDGE_STYLE_TEXT_LENGTH = 60000;
 
-/** POST /api/copilot/analyze-judge-style  { texts: string[] } — one or more judgments by a
- *  specific judge, each already extracted client-side the same way every other extractor here
- *  reads text (never the file itself). Paid-subscription only — deliberately stricter than the
- *  free-draft allowance in routes/cases.ts (no free-trial fallback here), since this is an
- *  optional, on-demand paid feature rather than the core drafting flow every account gets a
- *  couple of free tries at. */
+/** POST /api/copilot/analyze-judge-style  { texts: string[], sourceType?: 'judgment' | 'application' }
+ *  — one or more reference documents, each already extracted client-side the same way every other
+ *  extractor here reads text (never the file itself). `sourceType` picks which of two prompts
+ *  analyzeJudgeStyle uses: 'judgment' (default, backward-compatible) reads judgments by a specific
+ *  judge; 'application' reads a sample application/petition the user wants the draft's structure
+ *  to follow instead. Both return the identical JudgeStyleProfile shape, since the underlying
+ *  effect on the draft (applyJudgeStyleToSections reordering facts/law/prayer) is the same either
+ *  way — only the source of the structural preference differs. Paid-subscription only —
+ *  deliberately stricter than the free-draft allowance in routes/cases.ts (no free-trial fallback
+ *  here), since this is an optional, on-demand paid feature rather than the core drafting flow
+ *  every account gets a couple of free tries at. */
 copilotRouter.post('/analyze-judge-style', async (req: AuthedRequest, res) => {
   const { rows } = await pool.query('SELECT subscription_status FROM users WHERE id = $1', [req.userId]);
   if (rows[0]?.subscription_status !== 'active') {
     return res.status(402).json({ error: 'Judge style analysis is available on a paid plan.', reason: 'subscription_required' });
   }
 
-  const { texts } = req.body;
+  const { texts, sourceType } = req.body;
   if (!Array.isArray(texts) || texts.length === 0 || texts.some((t) => typeof t !== 'string' || !t.trim())) {
     return res.status(400).json({ error: 'texts is required and must be a non-empty array of non-empty strings' });
   }
+  if (sourceType !== undefined && sourceType !== 'judgment' && sourceType !== 'application') {
+    return res.status(400).json({ error: "sourceType must be 'judgment' or 'application' when provided" });
+  }
   const combined = texts.map((t: string) => t.trim()).join('\n\n---\n\n');
   if (combined.length > MAX_JUDGE_STYLE_TEXT_LENGTH) {
-    return res.status(400).json({ error: `Combined judgment text is too long (max ${MAX_JUDGE_STYLE_TEXT_LENGTH} characters) — try fewer or shorter judgments` });
+    return res
+      .status(400)
+      .json({ error: `Combined text is too long (max ${MAX_JUDGE_STYLE_TEXT_LENGTH} characters) — try fewer or shorter documents` });
   }
 
   try {
-    const profile = await analyzeJudgeStyle({ text: combined });
+    const profile = await analyzeJudgeStyle({ text: combined, sourceType: sourceType ?? 'judgment' });
     res.json(profile);
   } catch (err) {
     console.error('Judge style analysis failed', err);
