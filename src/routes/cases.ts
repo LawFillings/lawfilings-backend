@@ -33,19 +33,25 @@ casesRouter.post('/', async (req: AuthedRequest, res) => {
     return res.status(400).json({ error: 'title and ownerRole are required' });
   }
 
-  const { rows } = await pool.query(
-    `INSERT INTO cases (owner_id, owner_role, forum_id, case_type_id, parent_case_id, title, role_in_proceeding)
-     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 'applicant'))
-     RETURNING *`,
-    [req.userId, ownerRole, forumId ?? null, caseTypeId ?? null, parentCaseId ?? null, title, roleInProceeding]
-  );
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO cases (owner_id, owner_role, forum_id, case_type_id, parent_case_id, title, role_in_proceeding)
+       VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 'applicant'))
+       RETURNING *`,
+      [req.userId, ownerRole, forumId ?? null, caseTypeId ?? null, parentCaseId ?? null, title, roleInProceeding]
+    );
 
-  await pool.query(
-    `INSERT INTO audit_log (user_id, action, entity_type, entity_id) VALUES ($1, 'case_created', 'case', $2)`,
-    [req.userId, rows[0].id]
-  );
+    await pool.query(
+      `INSERT INTO audit_log (user_id, action, entity_type, entity_id) VALUES ($1, 'case_created', 'case', $2)`,
+      [req.userId, rows[0].id]
+    );
 
-  res.status(201).json(rows[0]);
+    res.status(201).json(rows[0]);
+  } catch (err: any) {
+    if (err.code === '23503') return res.status(400).json({ error: 'Invalid forumId, caseTypeId, or parentCaseId' });
+    console.error('Case creation failed', err);
+    res.status(500).json({ error: 'Failed to create case' });
+  }
 });
 
 /** GET /api/cases/:id — including its drafts */
