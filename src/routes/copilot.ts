@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.js';
 import { copilotLimiter } from '../middleware/rateLimit.js';
+import { requireProTier, checkProBudget } from '../middleware/proBudget.js';
 import {
   suggestClauses,
   checkForDefects,
@@ -253,11 +254,46 @@ const VALID_TRANSLATE_LANGUAGES: QaLanguage[] = ['en', 'hi', 'pa', 'gu', 'as', '
 // English.
 const MAX_TRANSLATE_TEXT_LENGTH = 12000;
 
+/** Records one real translation call (success or failure) so the Pro spend cap in
+ *  middleware/proBudget.ts can see this feature's cost — mirrors logCauseListUsage in
+ *  routes/causeList.ts. Never awaited in a way that could fail the actual response. */
+async function logTranslationUsage(entry: {
+  userId?: string;
+  targetLanguage: string;
+  truncated: boolean;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  success: boolean;
+  errorMessage?: string;
+}): Promise<void> {
+  if (!entry.userId) return;
+  try {
+    await pool.query(
+      `INSERT INTO translation_usage (user_id, target_language, model, input_tokens, output_tokens, truncated, success, error_message)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        entry.userId,
+        entry.targetLanguage,
+        entry.model ?? null,
+        entry.inputTokens ?? null,
+        entry.outputTokens ?? null,
+        entry.truncated,
+        entry.success,
+        entry.errorMessage ?? null,
+      ]
+    );
+  } catch (err) {
+    console.error('Failed to log translation usage (non-fatal)', err);
+  }
+}
+
 /** POST /api/copilot/translate-document  { text, targetLanguage } — text already extracted
  *  client-side from an uploaded PDF (an Act, a judgment, or similar); the file itself is never
  *  received or stored here. Longer documents are translated only up to the cap; `truncated`
- *  tells the caller whether that happened so it can say so to the user. */
-copilotRouter.post('/translate-document', async (req, res) => {
+ *  tells the caller whether that happened so it can say so to the user. Pro-only (see
+ *  requireProTier) with the same combined monthly spend cap cause-list uses. */
+copilotRouter.post('/translate-document', requireProTier, checkProBudget, async (req: AuthedRequest, res) => {
   const { text, targetLanguage } = req.body ?? {};
   if (typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required' });
@@ -276,12 +312,20 @@ copilotRouter.post('/translate-document', async (req, res) => {
   res.setHeader('X-Translation-Truncated', String(truncated));
 
   try {
-    await streamTranslateDocument({ text: inputText, targetLanguage: targetLanguage as QaLanguage }, (chunk) => {
+    const usage = await streamTranslateDocument({ text: inputText, targetLanguage: targetLanguage as QaLanguage }, (chunk) => {
       res.write(chunk);
     });
+    await logTranslationUsage({ userId: req.userId, targetLanguage, truncated, ...usage, success: true });
     res.end();
   } catch (err) {
     console.error('Document translation failed', err);
+    await logTranslationUsage({
+      userId: req.userId,
+      targetLanguage,
+      truncated,
+      success: false,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    });
     if (res.headersSent) {
       res.end();
     } else {

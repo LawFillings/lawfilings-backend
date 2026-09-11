@@ -291,7 +291,7 @@ export async function answerGeneralLegalQuestion(params: {
 export async function streamTranslateDocument(
   params: { text: string; targetLanguage: QaLanguage },
   onChunk: (textDelta: string) => void
-): Promise<void> {
+): Promise<{ model: string; inputTokens: number; outputTokens: number }> {
   const { text, targetLanguage } = params;
 
   const stream = anthropic.messages.stream({
@@ -308,7 +308,12 @@ export async function streamTranslateDocument(
   });
 
   stream.on('text', onChunk);
-  await stream.finalMessage();
+  const finalMessage = await stream.finalMessage();
+  return {
+    model: finalMessage.model,
+    inputTokens: finalMessage.usage.input_tokens,
+    outputTokens: finalMessage.usage.output_tokens,
+  };
 }
 
 export interface FirExtraction {

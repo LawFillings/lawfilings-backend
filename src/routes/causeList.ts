@@ -3,6 +3,7 @@ import { Agent } from 'undici';
 import crypto from 'node:crypto';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.js';
 import { copilotLimiter } from '../middleware/rateLimit.js';
+import { requireProTier, checkProBudget } from '../middleware/proBudget.js';
 import { extractCauseList, type CauseListEntry } from '../services/aiCopilot.js';
 import { pool } from '../db/pool.js';
 
@@ -70,6 +71,11 @@ export const causeListRouter = Router();
 
 causeListRouter.use(requireAuth);
 causeListRouter.use(copilotLimiter);
+// Cause-list is a Pro-only feature (see requireProTier's own comment for why: its per-call cost
+// runs far above what the Base tier's price was ever sized to absorb) with a combined monthly
+// spend cap shared with document translation, since the real cost driver is $ spent, not calls.
+causeListRouter.use(requireProTier);
+causeListRouter.use(checkProBudget);
 
 // The larger body-size limit this route needs (a base64 scanned PDF/photo) is applied in
 // index.ts, scoped to the /api/cause-list path — see the comment there for why it has to be

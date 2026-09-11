@@ -11,6 +11,9 @@ import {
 export type PlanId = 'monthly' | 'quarterly' | 'half_yearly' | 'yearly';
 const PLAN_IDS: PlanId[] = ['monthly', 'quarterly', 'half_yearly', 'yearly'];
 
+export type TierId = 'base' | 'pro';
+const TIER_IDS: TierId[] = ['base', 'pro'];
+
 const FREE_DRAFTS = 2;
 
 // How long a subscription period lasts, used to set subscription_current_period_end on our side
@@ -31,7 +34,7 @@ billingRouter.use(requireAuth);
  *  free drafts on sign up, then needs an active subscription. No trial concept any more. */
 billingRouter.get('/status', async (req: AuthedRequest, res) => {
   const { rows } = await pool.query(
-    `SELECT subscription_status, subscription_plan, subscription_current_period_end, free_drafts_used
+    `SELECT subscription_status, subscription_plan, subscription_tier, subscription_current_period_end, free_drafts_used
      FROM users WHERE id = $1`,
     [req.userId]
   );
@@ -41,6 +44,7 @@ billingRouter.get('/status', async (req: AuthedRequest, res) => {
   res.json({
     subscriptionStatus: user.subscription_status,
     subscriptionPlan: user.subscription_plan,
+    subscriptionTier: user.subscription_tier,
     subscriptionCurrentPeriodEnd: user.subscription_current_period_end,
     freeDraftsRemaining: Math.max(0, FREE_DRAFTS - user.free_drafts_used),
   });
@@ -49,7 +53,7 @@ billingRouter.get('/status', async (req: AuthedRequest, res) => {
 /** GET /api/billing/history */
 billingRouter.get('/history', async (req: AuthedRequest, res) => {
   const { rows } = await pool.query(
-    `SELECT id, kind, status, amount_paise, currency, plan, created_at
+    `SELECT id, kind, status, amount_paise, currency, plan, tier, created_at
      FROM payments WHERE user_id = $1 ORDER BY created_at DESC`,
     [req.userId]
   );
@@ -59,21 +63,25 @@ billingRouter.get('/history', async (req: AuthedRequest, res) => {
 /** POST /api/billing/subscription — creates (and lazily creates the underlying Razorpay Plan for)
  *  a subscription in an unpaid state; it only becomes active once /verify confirms the first charge. */
 billingRouter.post('/subscription', async (req: AuthedRequest, res) => {
-  const { plan } = req.body as { plan?: PlanId };
+  const { plan, tier: rawTier } = req.body as { plan?: PlanId; tier?: TierId };
   if (!plan || !PLAN_IDS.includes(plan)) {
     return res.status(400).json({ error: `plan must be one of ${PLAN_IDS.join(', ')}` });
+  }
+  const tier: TierId = rawTier ?? 'base';
+  if (!TIER_IDS.includes(tier)) {
+    return res.status(400).json({ error: `tier must be one of ${TIER_IDS.join(', ')}` });
   }
 
   let subscription;
   try {
-    const razorpayPlanId = await getOrCreateRazorpayPlanId(plan);
+    const razorpayPlanId = await getOrCreateRazorpayPlanId(tier, plan);
     subscription = await razorpay.subscriptions.create({
       plan_id: razorpayPlanId,
       customer_notify: 1,
       // Razorpay requires a finite total_count of billing cycles — 120 monthly-equivalent cycles
       // covers 10+ years at every interval we offer, which in practice means "until cancelled."
       total_count: 120,
-      notes: { userId: req.userId ?? '' },
+      notes: { userId: req.userId ?? '', tier },
     });
   } catch (err) {
     console.error('Razorpay subscription creation failed', err);
@@ -83,9 +91,9 @@ billingRouter.post('/subscription', async (req: AuthedRequest, res) => {
   await pool.query('UPDATE users SET razorpay_subscription_id = $1 WHERE id = $2', [subscription.id, req.userId]);
 
   await pool.query(
-    `INSERT INTO payments (user_id, kind, status, amount_paise, currency, plan, razorpay_subscription_id)
-     VALUES ($1, 'subscription_charge', 'created', $2, 'INR', $3, $4)`,
-    [req.userId, planAmountPaise(plan), plan, subscription.id]
+    `INSERT INTO payments (user_id, kind, status, amount_paise, currency, plan, tier, razorpay_subscription_id)
+     VALUES ($1, 'subscription_charge', 'created', $2, 'INR', $3, $4, $5)`,
+    [req.userId, planAmountPaise(tier, plan), plan, tier, subscription.id]
   );
 
   res.json({ subscriptionId: subscription.id, keyId: process.env.RAZORPAY_KEY_ID });
@@ -110,11 +118,12 @@ billingRouter.post('/subscription/verify', async (req: AuthedRequest, res) => {
   }
 
   const paymentRow = await pool.query(
-    `SELECT plan FROM payments WHERE razorpay_subscription_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1`,
+    `SELECT plan, tier FROM payments WHERE razorpay_subscription_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1`,
     [razorpaySubscriptionId, req.userId]
   );
   if (paymentRow.rows.length === 0) return res.status(404).json({ error: 'Subscription not found for this account' });
   const plan: PlanId = paymentRow.rows[0].plan;
+  const tier: TierId = paymentRow.rows[0].tier;
 
   await pool.query(
     `UPDATE payments SET status = 'captured', razorpay_payment_id = $1, updated_at = now()
@@ -123,13 +132,13 @@ billingRouter.post('/subscription/verify', async (req: AuthedRequest, res) => {
   );
   await pool.query(
     `UPDATE users
-     SET subscription_status = 'active', subscription_plan = $1,
-         subscription_current_period_end = now() + make_interval(days => $2)
-     WHERE id = $3`,
-    [plan, PLAN_PERIOD_DAYS[plan], req.userId]
+     SET subscription_status = 'active', subscription_plan = $1, subscription_tier = $2,
+         subscription_current_period_end = now() + make_interval(days => $3)
+     WHERE id = $4`,
+    [plan, tier, PLAN_PERIOD_DAYS[plan], req.userId]
   );
 
-  res.json({ status: 'active' });
+  res.json({ status: 'active', tier });
 });
 
 /** POST /api/billing/subscription/cancel */
