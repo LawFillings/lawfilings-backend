@@ -1010,6 +1010,52 @@ for (const [courtId, courtNameId] of Object.entries(NCLAT_BENCH_IDS)) {
   };
 }
 
+/** All 5 DRATs (confirmed live via drt.gov.in's own "Select DRAT" filter, which has no captcha)
+ *  share one JSON API — `schemeNameDrtId` is the same id the site's own dropdown uses. The API
+ *  needs a real `multipart/form-data` body (not JSON): the axios instance backing this endpoint
+ *  is hard-coded to that content type in the site's own bundle, and a JSON body just gets a
+ *  generic "Record Not Fund" response instead of a clear error. It returns every notice (public
+ *  notices, vacancy circulars, holiday declarations, cause lists — no per-type filter server-side),
+ *  so the actual cause list for a date has to be picked out client-side by matching "causelist" in
+ *  the title against the requested date, e.g. "Causelist Dated_11.09.2026 (Adjournment)" or
+ *  "CAUSELIST_28.05.2026" — both forms confirmed live. */
+const DRAT_SCHEME_IDS: Record<string, number> = {
+  'drat-delhi': 100,
+  'drat-allahabad': 101,
+  'drat-chennai': 102,
+  'drat-mumbai': 103,
+  'drat-kolkata': 104,
+};
+
+async function fetchDratCauseListPdf(schemeId: number, date: string): Promise<Buffer[]> {
+  const form = new FormData();
+  form.append('schemeNameDrtId', String(schemeId));
+  const response = await fetchWithTimeout('https://drt.gov.in/drtapi/getPublicNotice', 15_000, {
+    method: 'POST',
+    body: form,
+  });
+  if (!response.ok) {
+    throw new Error(`Court site returned ${response.status}`);
+  }
+  const notices = (await response.json()) as Array<{ massage?: string; auctionurl?: string }>;
+
+  const [year, month, day] = date.split('-');
+  // Not `\b` before the day digits — titles like "Dated_11.09.2026" put an underscore right
+  // before them, and `\b` doesn't fire between two word characters (underscore counts as one).
+  const ddmmyyyy = new RegExp(`(?<!\\d)${day}[.\\-]${month}[.\\-]${year}(?!\\d)`);
+  const match = notices.find((n) => n.massage && /cause\s*list/i.test(n.massage) && ddmmyyyy.test(n.massage) && n.auctionurl);
+  if (!match?.auctionurl) {
+    throw new Error(`No cause list found for ${date} yet`);
+  }
+  return [await fetchPdfBuffer(match.auctionurl)];
+}
+
+for (const [courtId, schemeId] of Object.entries(DRAT_SCHEME_IDS)) {
+  AUTO_FETCH_COURTS[courtId] = {
+    fetchPdf: (date) => fetchDratCauseListPdf(schemeId, date),
+  };
+}
+
 /** POST /api/cause-list/extract
  *  { courtId, date, source: 'fetch' | 'upload', scope?, fileBase64?, mediaType? } → { entries: CauseListEntry[] }
  *  'fetch': courtId must be a tier-1 (auto-fetch) court; the PDF is fetched server-side. `scope`
