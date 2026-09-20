@@ -20,6 +20,15 @@ export const authLimiter = rateLimit({
   message: { error: 'Too many attempts — please wait a few minutes and try again.' },
 });
 
+/** Each password-reset request can send an email, so cap it tightly to stop inbox spamming. */
+export const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many password reset attempts — please wait a few minutes and try again.' },
+});
+
 /** AI copilot endpoints — each call is a real Anthropic API request, so this is keyed per
  *  authenticated user (not IP) to give every account its own budget rather than letting one
  *  script exhaust a shared IP-wide allowance while a real user next to it gets throttled too.

@@ -7,6 +7,7 @@ import {
   suggestClauses,
   checkForDefects,
   extractFirDetails,
+  extractFieldsFromDocument,
   extractLegalNoticeSourceDetails,
   extractOaLoanRecallDetails,
   extractAppealOrderDetails,
@@ -94,6 +95,51 @@ function validateExtractionText(req: import('express').Request, res: import('exp
   }
   return text;
 }
+
+const MAX_EXTRACT_FIELDS = 40;
+
+/** POST /api/copilot/extract-fields  { text, documentLabel, fields: [{ key, label, hint? }] } —
+ *  the general-purpose sibling of the /extract-* routes below: the wizard names the document and
+ *  the fields it wants, and gets back { values: { [key]: string } }. Text is extracted client-side;
+ *  this never receives the file. */
+copilotRouter.post('/extract-fields', async (req, res) => {
+  const text = validateExtractionText(req, res);
+  if (text === null) return;
+
+  const { documentLabel, fields } = req.body;
+  if (typeof documentLabel !== 'string' || !documentLabel.trim() || documentLabel.length > 80) {
+    return res.status(400).json({ error: 'documentLabel is required (max 80 characters)' });
+  }
+  if (!Array.isArray(fields) || fields.length === 0 || fields.length > MAX_EXTRACT_FIELDS) {
+    return res.status(400).json({ error: `fields must be a list of 1 to ${MAX_EXTRACT_FIELDS} items` });
+  }
+  const specs: { key: string; label: string; hint?: string }[] = [];
+  for (const f of fields) {
+    if (
+      !f ||
+      typeof f.key !== 'string' ||
+      !/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(f.key) ||
+      typeof f.label !== 'string' ||
+      !f.label.trim() ||
+      f.label.length > 120 ||
+      (f.hint !== undefined && (typeof f.hint !== 'string' || f.hint.length > 300))
+    ) {
+      return res.status(400).json({ error: 'each field needs a simple key and a label' });
+    }
+    specs.push({ key: f.key, label: f.label.trim(), hint: f.hint?.trim() || undefined });
+  }
+  if (new Set(specs.map((f) => f.key)).size !== specs.length) {
+    return res.status(400).json({ error: 'field keys must be unique' });
+  }
+
+  try {
+    const values = await extractFieldsFromDocument({ text, documentLabel: documentLabel.trim(), fields: specs });
+    res.json({ values });
+  } catch (err) {
+    console.error('Field extraction failed', err);
+    res.status(502).json({ error: 'This feature is unavailable right now — please fill in the details manually' });
+  }
+});
 
 /** POST /api/copilot/extract-fir  { text } — text already extracted client-side from a
  *  text-layer FIR PDF; this endpoint never receives or stores the file itself. */

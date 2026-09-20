@@ -2,11 +2,14 @@ import { Router } from 'express';
 import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
 import { pool } from '../db/pool.js';
-import { authLimiter } from '../middleware/rateLimit.js';
+import { authLimiter, passwordResetLimiter } from '../middleware/rateLimit.js';
+import { sendPasswordResetEmail } from '../services/email.js';
 
 export const authRouter = Router();
 
 const SESSION_TTL_DAYS = 30;
+const PASSWORD_RESET_TTL_MINUTES = 60;
+const MIN_PASSWORD_LENGTH = 8;
 
 function issueToken() {
   return crypto.randomBytes(32).toString('hex');
@@ -96,4 +99,57 @@ authRouter.post('/logout', async (req, res) => {
   const token = header.slice('Bearer '.length);
   await pool.query('DELETE FROM sessions WHERE token_hash = $1', [hashToken(token)]);
   res.status(204).send();
+});
+
+/**
+ * POST /api/auth/forgot-password — always answers 200 with the same body whether or not the email
+ * exists, so it can't be used to discover which emails have accounts.
+ */
+authRouter.post('/forgot-password', passwordResetLimiter, async (req, res) => {
+  const { email } = req.body;
+  if (typeof email !== 'string' || !email) {
+    return res.status(400).json({ error: 'email is required' });
+  }
+
+  const { rows } = await pool.query('SELECT id, full_name, email FROM users WHERE email = $1', [email]);
+  if (rows.length > 0) {
+    const user = rows[0];
+    const resetToken = issueToken();
+    await pool.query(
+      'UPDATE users SET password_reset_token_hash = $1, password_reset_expires_at = $2 WHERE id = $3',
+      [hashToken(resetToken), new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000), user.id]
+    );
+    try {
+      await sendPasswordResetEmail(user.email, user.full_name, resetToken);
+    } catch (err) {
+      console.error('Failed to send password reset email', err);
+    }
+  }
+
+  res.json({ ok: true });
+});
+
+/** POST /api/auth/reset-password — single-use token; also signs the account out everywhere. */
+authRouter.post('/reset-password', passwordResetLimiter, async (req, res) => {
+  const { token, password } = req.body;
+  if (typeof token !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'token and password are required' });
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  const { rows } = await pool.query(
+    `UPDATE users SET password_hash = $1, password_reset_token_hash = NULL, password_reset_expires_at = NULL
+     WHERE password_reset_token_hash = $2 AND password_reset_expires_at > now()
+     RETURNING id`,
+    [passwordHash, hashToken(token)]
+  );
+  if (rows.length === 0) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired' });
+  }
+
+  await pool.query('DELETE FROM sessions WHERE user_id = $1', [rows[0].id]);
+  res.json({ ok: true });
 });

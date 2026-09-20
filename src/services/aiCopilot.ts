@@ -373,6 +373,62 @@ async function extractStructuredFields<T extends object>(params: {
   }
 }
 
+export interface ExtractFieldSpec {
+  key: string;
+  label: string;
+  hint?: string;
+}
+
+/**
+ * Reusable form of the extractors below: the caller (a wizard) says which document it is reading
+ * and which fields it wants, so a new wizard needs no new prompt or route. Same discipline as
+ * every other extractor here — an empty field beats a wrong one, and only the keys asked for are
+ * ever returned.
+ */
+export async function extractFieldsFromDocument(params: {
+  text: string;
+  documentLabel: string;
+  fields: ExtractFieldSpec[];
+}): Promise<Record<string, string>> {
+  const { text, documentLabel, fields } = params;
+  const schema = fields.map((f) => `"${f.key}": "string"`).join(', ');
+  const guide = fields
+    .map((f) => `- ${f.key}: ${f.label}${f.hint ? ` — ${f.hint}` : ''}`)
+    .join('\n');
+  const empty: Record<string, string> = Object.fromEntries(fields.map((f) => [f.key, '']));
+
+  const response = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 2048,
+    system:
+      `You extract specific fields from the text of a ${documentLabel} (an Indian legal/commercial document) ` +
+      'so they can pre-fill a court-filing form. Respond only with JSON matching this schema: ' +
+      `{${schema}}. Field guide:\n${guide}\n` +
+      'Copy names, numbers, dates and addresses exactly as written in the document (dates as written, ' +
+      'amounts without currency symbols or commas unless the field says otherwise). Take every value only ' +
+      'from the text given. For any field you cannot confidently find, return an empty string for it rather ' +
+      'than guessing or inferring — an empty field the user fills in themselves is far better than a wrong ' +
+      'one they miss. Be especially careful never to attribute one party\'s details to another party.',
+    messages: [{ role: 'user', content: text }],
+  });
+
+  const textBlock = response.content.find((b) => b.type === 'text');
+  if (!textBlock || textBlock.type !== 'text') return empty;
+  try {
+    const parsed = JSON.parse(stripJsonFence(textBlock.text)) as Record<string, unknown>;
+    const result: Record<string, string> = { ...empty };
+    for (const key of Object.keys(empty)) {
+      const v = parsed[key];
+      if (typeof v === 'string') result[key] = v;
+      else if (typeof v === 'number') result[key] = String(v);
+    }
+    return result;
+  } catch {
+    console.error('Failed to parse field-extraction response:', textBlock.text);
+    return empty;
+  }
+}
+
 /**
  * Pulls the fields the Bail Application wizard's "Case & FIR details" step asks for out of an
  * FIR's text (already extracted client-side from a text-layer PDF — this never sees the file

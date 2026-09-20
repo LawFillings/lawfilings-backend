@@ -21,6 +21,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
+    "nodemailer": "^10.0.10",
     "pg": "^8.22.0",
     "razorpay": "^2.9.8",
     "undici": "^7.29.0"
