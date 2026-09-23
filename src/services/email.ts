@@ -4,9 +4,14 @@
  * SMTP_APP_PASSWORD (a Google app password) set in the environment; FRONTEND_URL is the public
  * address of the web app, used to build the reset link.
  */
+import dns from 'node:dns';
 import nodemailer from 'nodemailer';
 
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+
+// Render's outbound network can't route IPv6, but Node's DNS resolution prefers
+// smtp.gmail.com's AAAA record by default — force IPv4 first, process-wide.
+dns.setDefaultResultOrder('ipv4first');
 
 function getTransport() {
   const port = Number(process.env.SMTP_PORT ?? 587);
@@ -19,9 +24,6 @@ function getTransport() {
     requireTLS: port !== 465,
     connectionTimeout: 10_000,
     greetingTimeout: 10_000,
-    // Render's outbound network can't route IPv6, but Node's DNS resolution
-    // prefers smtp.gmail.com's AAAA record by default — force IPv4.
-    family: 4,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_APP_PASSWORD,
