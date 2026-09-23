@@ -56,3 +56,14 @@ export const lawLibraryAiLimiter = rateLimit({
   keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
   message: { error: 'Too many questions from this connection in the last hour — please try again later.' },
 });
+
+/** Sending an inquiry to an advocate — user-keyed (logged-in senders), falls back to IP if
+ *  somehow unauthenticated. Tight enough to stop one account blasting every listed advocate. */
+export const advocateInquiryLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req as AuthedRequest).userId ?? ipKeyGenerator(req.ip ?? 'unknown'),
+  message: { error: 'Too many inquiries sent — please wait a while before sending more.' },
+});

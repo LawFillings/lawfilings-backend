@@ -9,6 +9,7 @@ import { causeListRouter } from './routes/causeList.js';
 import { lawLibraryRouter } from './routes/lawLibrary.js';
 import { billingRouter } from './routes/billing.js';
 import { adminRouter } from './routes/admin.js';
+import { advocatesRouter } from './routes/advocates.js';
 import { globalLimiter } from './middleware/rateLimit.js';
 
 const app = express();
@@ -38,6 +39,7 @@ app.use('/api/cause-list', causeListRouter);
 app.use('/api/law-library', lawLibraryRouter);
 app.use('/api/billing', billingRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/advocates', advocatesRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
