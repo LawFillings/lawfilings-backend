@@ -19,6 +19,9 @@ function getTransport() {
     requireTLS: port !== 465,
     connectionTimeout: 10_000,
     greetingTimeout: 10_000,
+    // Render's outbound network can't route IPv6, but Node's DNS resolution
+    // prefers smtp.gmail.com's AAAA record by default — force IPv4.
+    family: 4,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_APP_PASSWORD,
