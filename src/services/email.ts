@@ -9,10 +9,16 @@ import nodemailer from 'nodemailer';
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 
 function getTransport() {
+  const port = Number(process.env.SMTP_PORT ?? 587);
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST ?? 'smtp.gmail.com',
-    port: Number(process.env.SMTP_PORT ?? 465),
-    secure: true,
+    port,
+    // Port 465 is implicit TLS; port 587 (the default here) uses STARTTLS instead.
+    // Some hosts block outbound 465, so 587 is the more portable default.
+    secure: port === 465,
+    requireTLS: port !== 465,
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_APP_PASSWORD,
