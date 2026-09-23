@@ -76,9 +76,20 @@ advocatesRouter.get('/me/profile', async (req: AuthedRequest, res) => {
      FROM advocate_profiles WHERE user_id = $1`,
     [req.userId]
   );
-  res.json(
-    rows[0] ?? { city: null, practiceState: null, practiceForums: [], languages: [], bio: null, practicingSinceYear: null, listed: false }
+  const profile =
+    rows[0] ?? { city: null, practiceState: null, practiceForums: [], languages: [], bio: null, practicingSinceYear: null, listed: false };
+
+  // A cheap, real suggestion for the "pre-fill, don't force" listing editor: forums this advocate
+  // has actually drafted a filing in on LawFilings itself — not asked of them, just observed.
+  // Always computed (it's one indexed query) so the frontend can offer it even on a first visit.
+  const { rows: forumRows } = await pool.query(
+    `SELECT DISTINCT ct.forum_type AS "forumType"
+     FROM cases c JOIN case_types ct ON ct.id = c.case_type_id
+     WHERE c.owner_id = $1 AND ct.forum_type IS NOT NULL`,
+    [req.userId]
   );
+
+  res.json({ ...profile, suggestedForums: forumRows.map((r) => r.forumType) });
 });
 
 /** PUT /api/advocates/me/profile — upsert. Refuses to set listed=true unless the account is
