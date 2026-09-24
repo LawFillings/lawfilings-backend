@@ -7,6 +7,7 @@
  * out identically) — an HTTP API sidesteps that entirely, since it just talks plain HTTPS.
  */
 import { Resend } from 'resend';
+import { getPasswordResetEmailCopy } from './emailTranslations.js';
 
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 // A subdomain, not the root domain — its DNS records are independent of the root domain's
@@ -18,14 +19,17 @@ function getClient() {
 }
 
 /** Fails loudly to the caller; routes/auth.ts logs the failure without revealing it to the requester. */
-export async function sendPasswordResetEmail(to: string, fullName: string, rawToken: string) {
+export async function sendPasswordResetEmail(to: string, fullName: string, rawToken: string, language?: string) {
   const resetUrl = `${FRONTEND_URL}/?reset=${rawToken}`;
+  const copy = getPasswordResetEmailCopy(language);
+  const greeting = copy.greeting(fullName);
+  const dirAttr = copy.rtl ? ' dir="rtl"' : '';
   const { error } = await getClient().emails.send({
     from: FROM_ADDRESS,
     to,
-    subject: 'Reset your LawFilings password',
-    text: `Hi ${fullName},\n\nWe received a request to reset your LawFilings password. Set a new one here:\n${resetUrl}\n\nThis link expires in 1 hour and can be used once. If you didn't ask for this, you can ignore this email — your password won't change.`,
-    html: `<p>Hi ${fullName},</p><p>We received a request to reset your LawFilings password. Set a new one here:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>This link expires in 1 hour and can be used once. If you didn't ask for this, you can ignore this email — your password won't change.</p>`,
+    subject: copy.subject,
+    text: `${greeting}\n\n${copy.intro}\n${resetUrl}\n\n${copy.expiryNote} ${copy.ignoreNote}`,
+    html: `<div${dirAttr}><p>${greeting}</p><p>${copy.intro}</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>${copy.expiryNote} ${copy.ignoreNote}</p></div>`,
   });
   if (error) {
     throw new Error(`Resend error (${error.name}): ${error.message}`);

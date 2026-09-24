@@ -106,7 +106,7 @@ authRouter.post('/logout', async (req, res) => {
  * exists, so it can't be used to discover which emails have accounts.
  */
 authRouter.post('/forgot-password', passwordResetLimiter, async (req, res) => {
-  const { email } = req.body;
+  const { email, language } = req.body;
   if (typeof email !== 'string' || !email) {
     return res.status(400).json({ error: 'email is required' });
   }
@@ -120,7 +120,7 @@ authRouter.post('/forgot-password', passwordResetLimiter, async (req, res) => {
       [hashToken(resetToken), new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000), user.id]
     );
     try {
-      await sendPasswordResetEmail(user.email, user.full_name, resetToken);
+      await sendPasswordResetEmail(user.email, user.full_name, resetToken, typeof language === 'string' ? language : undefined);
     } catch (err) {
       console.error('Failed to send password reset email', err);
     }
